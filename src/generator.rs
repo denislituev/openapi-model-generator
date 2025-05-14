@@ -67,4 +67,11 @@ pub fn generate_rust_code(models: &[Model]) -> Result<String> {
     }
 
     Ok(code)
-} 
+}
+
+pub fn generate_lib() -> Result<String> {
+    let mut code = String::new();
+    code.push_str("pub mod models;\n");
+
+    Ok(code)
+}
