@@ -38,7 +38,7 @@ const RUST_RESERVED_KEYWORDS: &[&str] = &[
     "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
     "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
     "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
-    "while", "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try",
+    "while", "abstract", "become", "box", "do", "final", "gen", "macro", "override", "priv", "try",
     "typeof", "unsized", "virtual", "yield",
 ];
 
