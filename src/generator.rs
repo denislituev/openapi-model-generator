@@ -252,11 +252,7 @@ fn generate_model(model: &Model, required_uses: &mut RequiredUses) -> Result<Str
 
     for field in &model.fields {
         let field_type = match field.field_type.as_str() {
-            "String" => "String",
-            "f64" => "f64",
-            "i64" => "i64",
-            "bool" => "bool",
-            "DateTime" => {
+            "DateTime" | "DateTime<Utc>" => {
                 *required_uses |= RequiredUses::DATETIME;
                 "DateTime<Utc>"
             }
