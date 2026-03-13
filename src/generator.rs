@@ -14,6 +14,27 @@ bitflags::bitflags! {
         const DATETIME = 0b00000010;
         const DATE = 0b00000100;
     }
+
+    /// Choose what type of structs you want to generate:
+    ///  - Models (generated always)
+    ///  - Requests (optional)
+    ///  - Responses (optional)
+    pub struct GenerateMode: u8 {
+        /// Models will be always include to output
+        const MODELS = 0;
+        /// Additional includes request structs to output
+        const REQUESTS = 1 << 0;
+        /// Additional includes response structs to output
+        const RESPONSES = 1 << 1;
+        /// Outputs all possible structs: models, request and response structs
+        const ALL = Self::REQUESTS.bits() | Self::RESPONSES.bits();
+    }
+}
+
+impl Default for GenerateMode {
+    fn default() -> Self {
+        Self::ALL
+    }
 }
 
 static HDR: OnceLock<String> = OnceLock::new();
@@ -138,6 +159,7 @@ pub fn generate_models(
     models: &[ModelType],
     requests: &[RequestModel],
     responses: &[ResponseModel],
+    mode: GenerateMode,
 ) -> Result<String> {
     // First, generate all model code to determine which imports are needed
     let mut models_code = String::new();
@@ -163,12 +185,16 @@ pub fn generate_models(
         }
     }
 
-    for request in requests {
-        models_code.push_str(&generate_request_model(request)?);
+    if mode.contains(GenerateMode::REQUESTS) {
+        for request in requests {
+            models_code.push_str(&generate_request_model(request)?);
+        }
     }
 
-    for response in responses {
-        models_code.push_str(&generate_response_model(response)?);
+    if mode.contains(GenerateMode::RESPONSES) {
+        for response in responses {
+            models_code.push_str(&generate_response_model(response)?);
+        }
     }
 
     // Determine which imports are actually needed
