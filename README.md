@@ -55,13 +55,28 @@ openapi-model-generator = "0.5.0"
 ### Command Line Interface
 
 ```bash
+# Generate everything (default)
 omg -i path/to/openapi.yaml -o ./generated
+
+# Generate only models
+omg -i path/to/openapi.yaml -o ./generated -m models
+
+# Generate models and request types
+omg -i path/to/openapi.yaml -o ./generated -m requests
+
+# Generate models and response types
+omg -i path/to/openapi.yaml -o ./generated -m responses
 ```
 
 ### Parameters
 
 - `-i, --input` - Path to the OpenAPI specification file (YAML or JSON)
 - `-o, --output` - Path to the output directory (default: ./generated)
+- `-m, --mode <MODE>` - Generation mode (default: all)
+  - `models` - Generate only models from `components/schemas`
+  - `requests` - Generate models and request types from API endpoints
+  - `responses` - Generate models and response types from API endpoints
+  - `all` - Generate everything (models, requests, and responses)
 
 ### Library Usage
 
