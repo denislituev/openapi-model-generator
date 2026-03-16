@@ -1,5 +1,5 @@
 use clap::Parser;
-use openapi_model_generator::{cli::Args, generator, parser, Error, GenerateMode, Result};
+use openapi_model_generator::{cli::Args, generator, parser, Error, Result};
 use openapiv3::OpenAPI;
 use std::fs;
 use std::io;
@@ -73,8 +73,7 @@ fn main() -> Result<()> {
 
     let (models, requests, responses) = parser::parse_openapi(&openapi)?;
 
-    let rust_code =
-        generator::generate_models(&models, &requests, &responses, GenerateMode::default())?;
+    let rust_code = generator::generate_models(&models, &requests, &responses, args.mode.into())?;
     let output_models_path = args.output.join("models.rs");
     fs::write(&output_models_path, rust_code.trim())?;
 
