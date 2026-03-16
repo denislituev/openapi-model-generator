@@ -23,6 +23,7 @@ struct FieldInfo {
     is_nullable: bool,
     is_array_ref: bool,
     description: Option<String>,
+    custom_attrs: Option<Vec<String>>,
 }
 
 /// Converts camelCase to PascalCase
@@ -325,6 +326,7 @@ fn parse_schema_to_model_type(
                             is_array_ref: field_info.is_array_ref,
                             is_nullable: field_info.is_nullable,
                             description: field_info.description,
+                            custom_attrs: field_info.custom_attrs,
                         });
                     }
 
@@ -625,14 +627,16 @@ fn extract_field_info(
 ) -> Result<(FieldInfo, Option<ModelType>)> {
     let (mut field_type, format) = extract_type_and_format(schema, all_schemas)?;
 
-    let (is_nullable, is_array_ref, en, description) = match schema {
+    let (is_nullable, is_array_ref, en, description, custom_attrs) = match schema {
         ReferenceOr::Reference { reference } => {
             let mut is_array_ref = false;
             let mut is_nullable = false;
+            let mut custom_attrs = None;
 
             if let Some(type_name) = reference.strip_prefix("#/components/schemas/") {
                 if let Some(ReferenceOr::Item(schema)) = all_schemas.get(type_name) {
                     is_nullable = schema.schema_data.nullable;
+                    custom_attrs = extract_custom_attrs(schema);
 
                     if let SchemaKind::Type(Type::Array(array)) = &schema.schema_kind {
                         let is_items_one_of = match &array.items {
@@ -647,7 +651,7 @@ fn extract_field_info(
                 }
             }
 
-            (is_nullable, is_array_ref, None, None)
+            (is_nullable, is_array_ref, None, None, custom_attrs)
         }
 
         ReferenceOr::Item(schema) => {
@@ -660,6 +664,7 @@ fn extract_field_info(
             let is_nullable = schema.schema_data.nullable;
             let is_array_ref = matches!(schema.schema_kind, SchemaKind::Type(Type::Array(_)));
             let description = schema.schema_data.description.clone();
+            let custom_attrs = extract_custom_attrs(schema);
 
             let maybe_enum = match &schema.schema_kind {
                 SchemaKind::Type(Type::String(s)) if !s.enumeration.is_empty() => {
@@ -718,7 +723,13 @@ fn extract_field_info(
                 }
                 _ => None,
             };
-            (is_nullable, is_array_ref, maybe_enum, description)
+            (
+                is_nullable,
+                is_array_ref,
+                maybe_enum,
+                description,
+                custom_attrs,
+            )
         }
     };
 
@@ -729,6 +740,7 @@ fn extract_field_info(
             is_nullable,
             is_array_ref,
             description,
+            custom_attrs,
         },
         en,
     ))
@@ -1016,6 +1028,7 @@ fn extract_fields_from_schema(
                             is_nullable,
                             is_array_ref: field_info.is_array_ref,
                             description: field_info.description,
+                            custom_attrs: field_info.custom_attrs,
                         });
                         if let Some(inline_model) = inline_model {
                             match &inline_model {
@@ -1853,6 +1866,58 @@ mod tests {
                 );
                 // regular_field is not in required, but generator doesn't mark it as nullable
                 // (this is expected behavior - nullable only for explicitly nullable fields)
+            }
+            _ => panic!("Expected Struct"),
+        }
+    }
+
+    #[test]
+    fn test_x_rust_attrs_on_field() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test API", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "FrontendEvent": {
+                        "type": "object",
+                        "properties": {
+                            "field": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 100,
+                                "nullable": true,
+                                "x-rust-attrs": ["#[validate(range(min = 0, max = 100))]"]
+                            },
+                            "name": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        let model = models.iter().find(|m| m.name() == "FrontendEvent");
+        assert!(model.is_some(), "Expected FrontendEvent model");
+
+        match model.unwrap() {
+            ModelType::Struct(struct_model) => {
+                let field = struct_model.fields.iter().find(|f| f.name == "field");
+                assert!(field.is_some(), "Expected progress_percent field");
+                let field = field.unwrap();
+                assert_eq!(field.field_type, "i64");
+                assert!(
+                    field.custom_attrs.is_some(),
+                    "Expected field-level x-rust-attrs"
+                );
+                let attrs = field.custom_attrs.as_ref().unwrap();
+                assert_eq!(attrs.len(), 1);
+                assert_eq!(attrs[0], "#[validate(range(min = 0, max = 100))]");
+
+                let name_field = struct_model.fields.iter().find(|f| f.name == "name");
+                assert!(name_field.unwrap().custom_attrs.is_none());
             }
             _ => panic!("Expected Struct"),
         }
