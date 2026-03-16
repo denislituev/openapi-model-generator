@@ -1,6 +1,8 @@
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
+use crate::generator::GenerateMode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Mode {
     /// Generate only models
@@ -14,6 +16,17 @@ pub enum Mode {
 
     /// Generate everything
     All,
+}
+
+impl From<Mode> for GenerateMode {
+    fn from(mode: Mode) -> Self {
+        match mode {
+            Mode::Models => GenerateMode::MODELS,
+            Mode::Requests => GenerateMode::MODELS | GenerateMode::REQUESTS,
+            Mode::Responses => GenerateMode::MODELS | GenerateMode::RESPONSES,
+            Mode::All => GenerateMode::ALL,
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
