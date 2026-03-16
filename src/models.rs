@@ -38,6 +38,9 @@ pub struct Field {
     pub is_nullable: bool,
     pub is_array_ref: bool,
     pub description: Option<String>,
+    /// Field-level Rust attributes from x-rust-attrs (e.g. #[serde(rename = "...")])
+    #[serde(default)]
+    pub custom_attrs: Option<Vec<String>>,
 }
 
 impl Field {

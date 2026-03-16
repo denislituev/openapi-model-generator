@@ -275,6 +275,13 @@ fn generate_model(model: &Model, required_uses: &mut RequiredUses) -> Result<Str
         // Add field description if present
         output.push_str(&generate_description_docs(&field.description, "", "    "));
 
+        // Field-level custom attributes (e.g. #[serde(rename = "...")])
+        if let Some(attrs) = &field.custom_attrs {
+            for attr in attrs {
+                output.push_str(&format!("    {attr}\n"));
+            }
+        }
+
         // Only add serde rename if the Rust field name differs from the original field name
         if lowercased_name != field.name {
             output.push_str(&format!("    #[serde(rename = \"{}\")]\n", field.name));
@@ -427,6 +434,13 @@ fn generate_composition(
         // Only add serde rename if the Rust field name differs from the original field name
         if lowercased_name != field.name {
             output.push_str(&format!("    #[serde(rename = \"{}\")]\n", field.name));
+        }
+
+        // Field-level custom attributes (e.g. #[serde(rename = "...")])
+        if let Some(attrs) = &field.custom_attrs {
+            for attr in attrs {
+                output.push_str(&format!("    {attr}\n"));
+            }
         }
 
         // If field references an array, wrap it in Vec<>
