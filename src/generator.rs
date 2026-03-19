@@ -164,11 +164,16 @@ pub fn generate_models(
     // First, generate all model code to determine which imports are needed
     let mut models_code = String::new();
     let mut required_uses = RequiredUses::empty();
+    let mut needs_validator = false;
 
     for model_type in models {
         match model_type {
             ModelType::Struct(model) => {
-                models_code.push_str(&generate_model(model, &mut required_uses)?);
+                models_code.push_str(&generate_model(
+                    model,
+                    &mut required_uses,
+                    &mut needs_validator,
+                )?);
             }
             ModelType::Union(union) => {
                 models_code.push_str(&generate_union(union)?);
@@ -210,6 +215,10 @@ pub fn generate_models(
         output.push_str("use uuid::Uuid;\n");
     }
 
+    if needs_validator {
+        output.push_str("use validator::Validator;\n");
+    }
+
     if needs_datetime || needs_date {
         output.push_str("use chrono::{");
         let mut chrono_imports = Vec::new();
@@ -232,7 +241,84 @@ pub fn generate_models(
     Ok(output)
 }
 
-fn generate_model(model: &Model, required_uses: &mut RequiredUses) -> Result<String> {
+/// Generate validator attributes based on validation rules
+fn generate_validator_attrs(rules: &crate::models::ValidationRules, field_type: &str) -> String {
+    let mut attrs = String::new();
+
+    match field_type {
+        "String" | "str" | "Option<String>" | "Option<str>" => {
+            let mut length_attrs = Vec::new();
+            if let Some(min) = rules.min_length {
+                length_attrs.push(format!("min = {}", min));
+            }
+            if let Some(max) = rules.max_length {
+                length_attrs.push(format!("max = {}", max));
+            }
+            if !length_attrs.is_empty() {
+                attrs.push_str(&format!(
+                    "    #[validate(length({}))]\n",
+                    length_attrs.join(", ")
+                ));
+            }
+
+            if rules.email {
+                attrs.push_str("    #[validate(email)]\n");
+            }
+
+            if rules.url {
+                attrs.push_str("    #[validate(url)]\n");
+            }
+
+            if let Some(pattern) = &rules.pattern {
+                attrs.push_str(&format!("    #[regex(pattern = r\"{}\")]\n", pattern));
+            }
+        }
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
+        | "Option<i8>" | "Option<i16>" | "Option<i32>" | "Option<i64>" | "Option<u8>"
+        | "Option<u16>" | "Option<u32>" | "Option<u64>" | "Option<f32>" | "Option<f64>" => {
+            let mut range_attrs = Vec::new();
+            if let Some(min) = rules.minimum {
+                range_attrs.push(format!("min = {}", min));
+            }
+            if let Some(max) = rules.maximum {
+                range_attrs.push(format!("max = {}", max));
+            }
+            if rules.exclusive_minimum || rules.exclusive_maximum {
+                range_attrs.push("exclusive = true".to_string());
+            }
+            if !range_attrs.is_empty() {
+                attrs.push_str(&format!(
+                    "    #[validate(range({}))]\n",
+                    range_attrs.join(", ")
+                ));
+            }
+        }
+        _ if field_type.contains("Vec<") => {
+            let mut length_attrs = Vec::new();
+            if let Some(min) = rules.min_items {
+                length_attrs.push(format!("min = {}", min));
+            }
+            if let Some(max) = rules.max_items {
+                length_attrs.push(format!("max = {}", max));
+            }
+            if !length_attrs.is_empty() {
+                attrs.push_str(&format!(
+                    "    #[validate(length({}))]\n",
+                    length_attrs.join(", ")
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    attrs
+}
+
+fn generate_model(
+    model: &Model,
+    required_uses: &mut RequiredUses,
+    needs_validator: &mut bool,
+) -> Result<String> {
     let mut output = String::new();
 
     output.push_str(&generate_description_docs(
@@ -243,9 +329,21 @@ fn generate_model(model: &Model, required_uses: &mut RequiredUses) -> Result<Str
 
     output.push_str(&generate_custom_attrs(&model.custom_attrs));
 
+    // Check if any fields have validation rules
+    let has_validation = model.fields.iter().any(|f| f.validation_rules.is_some());
+
+    // Mark that we need validator import if any field has validation
+    if has_validation {
+        *needs_validator = true;
+    }
+
     // Only add default derive if custom_attrs doesn't already contain a derive directive
     if !has_custom_derive(&model.custom_attrs) {
-        output.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+        if has_validation {
+            output.push_str("#[derive(Debug, Clone, Serialize, Deserialize, Validator)]\n");
+        } else {
+            output.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+        }
     }
 
     output.push_str(&format!("pub struct {} {{\n", model.name));
@@ -282,6 +380,26 @@ fn generate_model(model: &Model, required_uses: &mut RequiredUses) -> Result<Str
             }
         }
 
+        // Calculate full field type before generating validator attributes
+        let is_optional = !field.is_required || field.is_nullable;
+
+        let base_type = if field.is_array_ref {
+            format!("Vec<{field_type}>")
+        } else {
+            field_type.to_string()
+        };
+
+        let full_field_type = if is_optional {
+            format!("Option<{base_type}>")
+        } else {
+            base_type
+        };
+
+        // Add validator attributes if the field has validation rules
+        if let Some(rules) = &field.validation_rules {
+            output.push_str(&generate_validator_attrs(rules, &full_field_type));
+        }
+
         // Only add serde rename if the Rust field name differs from the original field name
         if lowercased_name != field.name {
             output.push_str(&format!("    #[serde(rename = \"{}\")]\n", field.name));
@@ -291,22 +409,7 @@ fn generate_model(model: &Model, required_uses: &mut RequiredUses) -> Result<Str
             output.push_str("    #[serde(flatten)]\n");
         }
 
-        // If field references an array, wrap it in Vec<>
-        if field.is_array_ref {
-            if field.is_required && !field.is_nullable {
-                output.push_str(&format!("    pub {lowercased_name}: Vec<{field_type}>,\n",));
-            } else {
-                output.push_str(&format!(
-                    "    pub {lowercased_name}: Option<Vec<{field_type}>>,\n",
-                ));
-            }
-        } else if field.is_required && !field.is_nullable {
-            output.push_str(&format!("    pub {lowercased_name}: {field_type},\n",));
-        } else {
-            output.push_str(&format!(
-                "    pub {lowercased_name}: Option<{field_type}>,\n",
-            ));
-        }
+        output.push_str(&format!("    pub {lowercased_name}: {full_field_type},\n"));
     }
 
     output.push_str("}\n\n");

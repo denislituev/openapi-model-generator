@@ -41,6 +41,9 @@ pub struct Field {
     /// Field-level Rust attributes from x-rust-attrs (e.g. #[serde(rename = "...")])
     #[serde(default)]
     pub custom_attrs: Option<Vec<String>>,
+    /// Validation rules extracted from OpenAPI specification
+    #[serde(default)]
+    pub validation_rules: Option<ValidationRules>,
 }
 
 impl Field {
@@ -109,4 +112,46 @@ pub struct TypeAliasModel {
     pub target_type: String,
     pub description: Option<String>,
     pub custom_attrs: Option<Vec<String>>,
+}
+
+/// Validation rules extracted from OpenAPI specification
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ValidationRules {
+    // String validation
+    pub min_length: Option<usize>,
+    pub max_length: Option<usize>,
+    pub pattern: Option<String>,
+    pub email: bool,
+    pub url: bool,
+
+    // Number validation (stored as f64 to handle both Integer and Number types)
+    pub minimum: Option<f64>,
+    pub maximum: Option<f64>,
+    pub exclusive_minimum: bool,
+    pub exclusive_maximum: bool,
+    pub multiple_of: Option<f64>,
+
+    // Array validation
+    pub min_items: Option<usize>,
+    pub max_items: Option<usize>,
+    pub unique_items: bool,
+}
+
+impl ValidationRules {
+    /// Returns true if there are any validation rules defined
+    pub fn has_any(&self) -> bool {
+        self.min_length.is_some()
+            || self.max_length.is_some()
+            || self.pattern.is_some()
+            || self.email
+            || self.url
+            || self.minimum.is_some()
+            || self.maximum.is_some()
+            || self.exclusive_minimum
+            || self.exclusive_maximum
+            || self.multiple_of.is_some()
+            || self.min_items.is_some()
+            || self.max_items.is_some()
+            || self.unique_items
+    }
 }
