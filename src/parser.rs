@@ -690,7 +690,7 @@ fn extract_field_info(
     let (is_nullable, is_array_ref, en, description, custom_attrs, validation_rules) = match schema
     {
         ReferenceOr::Reference { reference } => {
-            let mut is_array_ref = false;
+            let is_array_ref = false;
             let mut is_nullable = false;
             let mut custom_attrs = None;
             let mut validation_rules = None;
@@ -700,17 +700,6 @@ fn extract_field_info(
                     is_nullable = schema.schema_data.nullable;
                     custom_attrs = extract_custom_attrs(schema);
                     validation_rules = extract_validation_rules(schema);
-
-                    if let SchemaKind::Type(Type::Array(array)) = &schema.schema_kind {
-                        let is_items_one_of = match &array.items {
-                            Some(ReferenceOr::Item(item_schema)) => {
-                                matches!(item_schema.schema_kind, SchemaKind::OneOf { .. })
-                            }
-                            _ => false,
-                        };
-
-                        is_array_ref = !is_items_one_of;
-                    }
                 }
             }
 
