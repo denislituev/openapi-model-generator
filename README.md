@@ -47,7 +47,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-openapi-model-generator = "0.5.0"
+openapi-model-generator = "0.6.0"
 ```
 
 ## Usage
@@ -258,8 +258,19 @@ This allows you to:
 - Apply conditional compilation attributes (cfg, cfg_attr)
 - Use custom validation macros
 - Works together with `x-rust-type` extension
+- **Note**: `x-rust-attrs` can also be applied to individual struct fields for fine-grained control.
 
-## Recent Updates (v0.5.0)
+## Recent Updates (v0.6.0)
+
+- **Added**: Validation generation support from OpenAPI schema constraints
+- **Added**: CLI generation mode support to control what types of code are generated
+- **Added**: `x-rust-attrs` extension support on individual struct fields
+- **Added**: Support for `gen` keyword as described in RFC3513
+- **Fixed**: Double Vec wrapping bug for fields referencing array type aliases via `$ref`
+- **Fixed**: Missing chrono imports when structs contain `DateTime<Utc>` fields
+- **Improved**: Library API to support generation modes (models, requests, responses, all)
+
+## Previous Updates (v0.5.0)
 
 - **Added**: Support for `x-rust-type` extension on individual properties
 - **Improved**: Multi-line description formatting for better documentation
