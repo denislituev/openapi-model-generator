@@ -24,6 +24,7 @@ struct FieldInfo {
     is_array_ref: bool,
     description: Option<String>,
     custom_attrs: Option<Vec<String>>,
+    validation_rules: Option<crate::models::ValidationRules>,
 }
 
 /// Converts camelCase to PascalCase
@@ -327,6 +328,7 @@ fn parse_schema_to_model_type(
                             is_nullable: field_info.is_nullable,
                             description: field_info.description,
                             custom_attrs: field_info.custom_attrs,
+                            validation_rules: field_info.validation_rules,
                         });
                     }
 
@@ -555,6 +557,64 @@ fn parse_schema_to_model_type(
     }
 }
 
+fn extract_validation_rules(schema: &Schema) -> Option<crate::models::ValidationRules> {
+    use crate::models::ValidationRules;
+
+    let mut rules = ValidationRules::default();
+
+    // Extract type-specific validation rules
+    match &schema.schema_kind {
+        openapiv3::SchemaKind::Type(openapiv3::Type::String(string_type)) => {
+            // Extract format-based validation rules for strings
+            match &string_type.format {
+                openapiv3::VariantOrUnknownOrEmpty::Item(_fmt) => {
+                    // Standard formats like DateTime, Date are handled elsewhere
+                    // For email/url validation, rely on Unknown format strings
+                }
+                openapiv3::VariantOrUnknownOrEmpty::Unknown(unknown_format) => {
+                    match unknown_format.to_lowercase().as_str() {
+                        "email" => rules.email = true,
+                        "uri" | "url" => rules.url = true,
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            // Extract string-specific validation rules
+            rules.min_length = string_type.min_length;
+            rules.max_length = string_type.max_length;
+            rules.pattern = string_type.pattern.clone();
+        }
+        openapiv3::SchemaKind::Type(openapiv3::Type::Integer(integer_type)) => {
+            rules.minimum = integer_type.minimum.map(|v| v as f64);
+            rules.maximum = integer_type.maximum.map(|v| v as f64);
+            rules.exclusive_minimum = integer_type.exclusive_minimum;
+            rules.exclusive_maximum = integer_type.exclusive_maximum;
+            rules.multiple_of = integer_type.multiple_of.map(|v| v as f64);
+        }
+        openapiv3::SchemaKind::Type(openapiv3::Type::Number(number_type)) => {
+            rules.minimum = number_type.minimum;
+            rules.maximum = number_type.maximum;
+            rules.exclusive_minimum = number_type.exclusive_minimum;
+            rules.exclusive_maximum = number_type.exclusive_maximum;
+            rules.multiple_of = number_type.multiple_of;
+        }
+        openapiv3::SchemaKind::Type(openapiv3::Type::Array(array_type)) => {
+            rules.min_items = array_type.min_items;
+            rules.max_items = array_type.max_items;
+            rules.unique_items = array_type.unique_items;
+        }
+        _ => {}
+    }
+
+    if rules.has_any() {
+        Some(rules)
+    } else {
+        None
+    }
+}
+
 fn extract_type_and_format(
     schema: &ReferenceOr<Schema>,
     all_schemas: &IndexMap<String, ReferenceOr<Schema>>,
@@ -627,16 +687,19 @@ fn extract_field_info(
 ) -> Result<(FieldInfo, Option<ModelType>)> {
     let (mut field_type, format) = extract_type_and_format(schema, all_schemas)?;
 
-    let (is_nullable, is_array_ref, en, description, custom_attrs) = match schema {
+    let (is_nullable, is_array_ref, en, description, custom_attrs, validation_rules) = match schema
+    {
         ReferenceOr::Reference { reference } => {
             let mut is_array_ref = false;
             let mut is_nullable = false;
             let mut custom_attrs = None;
+            let mut validation_rules = None;
 
             if let Some(type_name) = reference.strip_prefix("#/components/schemas/") {
                 if let Some(ReferenceOr::Item(schema)) = all_schemas.get(type_name) {
                     is_nullable = schema.schema_data.nullable;
                     custom_attrs = extract_custom_attrs(schema);
+                    validation_rules = extract_validation_rules(schema);
 
                     if let SchemaKind::Type(Type::Array(array)) = &schema.schema_kind {
                         let is_items_one_of = match &array.items {
@@ -651,7 +714,14 @@ fn extract_field_info(
                 }
             }
 
-            (is_nullable, is_array_ref, None, None, custom_attrs)
+            (
+                is_nullable,
+                is_array_ref,
+                None,
+                None,
+                custom_attrs,
+                validation_rules,
+            )
         }
 
         ReferenceOr::Item(schema) => {
@@ -665,6 +735,7 @@ fn extract_field_info(
             let is_array_ref = matches!(schema.schema_kind, SchemaKind::Type(Type::Array(_)));
             let description = schema.schema_data.description.clone();
             let custom_attrs = extract_custom_attrs(schema);
+            let validation_rules = extract_validation_rules(schema);
 
             let maybe_enum = match &schema.schema_kind {
                 SchemaKind::Type(Type::String(s)) if !s.enumeration.is_empty() => {
@@ -729,6 +800,7 @@ fn extract_field_info(
                 maybe_enum,
                 description,
                 custom_attrs,
+                validation_rules,
             )
         }
     };
@@ -741,6 +813,7 @@ fn extract_field_info(
             is_array_ref,
             description,
             custom_attrs,
+            validation_rules,
         },
         en,
     ))
@@ -1029,6 +1102,7 @@ fn extract_fields_from_schema(
                             is_array_ref: field_info.is_array_ref,
                             description: field_info.description,
                             custom_attrs: field_info.custom_attrs,
+                            validation_rules: field_info.validation_rules,
                         });
                         if let Some(inline_model) = inline_model {
                             match &inline_model {
