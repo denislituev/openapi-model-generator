@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-03-22
+
+### Added
+- **Validation Generation**: Added support for generating field validations from OpenAPI schema constraints. The generator now creates validation structs that can be used to validate incoming data against schema requirements.
+
+- **CLI Generation Mode**: Added CLI options to control what types of Rust code are generated. Use `-m` flag to choose:
+  - `models` - Generate only models from `components/schemas`
+  - `requests` - Generate models and request types from API endpoints
+  - `responses` - Generate models and response types from API endpoints
+  - `all` - Generate everything (default)
+
+- **x-rust-attrs on Struct Fields**: Extended `x-rust-attrs` extension support to individual struct fields, allowing custom attributes like custom derives, serde rules, or conditional compilation attributes on specific fields.
+
+- **gen Keyword Support**: Added support for the `gen` keyword as described in RFC3513, providing more granular control over which types are included in the generated output.
+
+### Fixed
+- **Double Vec Wrapping**: Fixed a critical bug where fields that reference named array type aliases via `$ref` were being incorrectly double-wrapped in `Vec<>`. The generator now correctly uses the referenced type name as-is without adding unnecessary wrappers.
+
+- **Chrono Imports**: Fixed missing chrono imports in generated code when structs contain `DateTime<Utc>` fields. The generator now properly includes `use chrono::{DateTime, Utc};` when needed.
+
+### Changed
+- **Library API**: Enhanced the library API to support generation modes, allowing library users to specify what types of code they want to generate (models, requests, responses, or all).
+
 ## [0.5.2] - 2026-02-16
 
 ### Fixed
