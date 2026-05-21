@@ -732,8 +732,7 @@ fn extract_field_info(
                 SchemaKind::Type(Type::String(s)) if !s.enumeration.is_empty() => {
                     let variants: Vec<String> =
                         s.enumeration.iter().filter_map(|v| v.clone()).collect();
-                    let enum_name =
-                        format!("{}{}", parent_name, to_pascal_case(field_name));
+                    let enum_name = format!("{}{}", parent_name, to_pascal_case(field_name));
                     field_type = enum_name.clone();
                     Some(ModelType::Enum(EnumModel {
                         name: enum_name,
@@ -996,8 +995,11 @@ fn resolve_union_variants(
                                     primitive_type: None,
                                 });
                             } else {
-                                let (fields, inline_models) =
-                                    extract_fields_from_schema(schema_name, referenced_schema, all_schemas)?;
+                                let (fields, inline_models) = extract_fields_from_schema(
+                                    schema_name,
+                                    referenced_schema,
+                                    all_schemas,
+                                )?;
                                 variants.push(UnionVariant {
                                     name: to_pascal_case(schema_name),
                                     fields,
@@ -2115,7 +2117,10 @@ mod tests {
 
         // The generated enum must carry the custom attrs.
         let kind_enum = models.iter().find(|m| m.name() == "SignalKind");
-        assert!(kind_enum.is_some(), "Expected SignalKind enum to be generated");
+        assert!(
+            kind_enum.is_some(),
+            "Expected SignalKind enum to be generated"
+        );
         match kind_enum.unwrap() {
             ModelType::Enum(e) => {
                 assert!(
