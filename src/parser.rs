@@ -884,8 +884,11 @@ fn resolve_all_of_fields(
                     existing_field.field_type = format!("Option<Vec<{}>>", field.field_type);
                 // Primitive narrowed to a more specific named type by a later
                 // allOf component (e.g. `String` -> a string enum type).
+                // serde_json::Value is a generic fallback, not a narrowing -
+                // a primitive must not be replaced by something less specific.
                 } else if PRIMITIVE_TYPES.contains(&existing_field.field_type.as_str())
                     && !PRIMITIVE_TYPES.contains(&field.field_type.as_str())
+                    && field.field_type != "serde_json::Value"
                 {
                     existing_field.field_type = field.field_type;
                 }
