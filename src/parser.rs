@@ -303,11 +303,13 @@ fn parse_schema_to_model_type(
 
                         let (field_info, inline_model) = match field_schema {
                             ReferenceOr::Item(boxed_schema) => extract_field_info(
+                                name,
                                 field_name,
                                 &ReferenceOr::Item((**boxed_schema).clone()),
                                 all_schemas,
                             )?,
                             ReferenceOr::Reference { reference } => extract_field_info(
+                                name,
                                 field_name,
                                 &ReferenceOr::Reference {
                                     reference: reference.clone(),
@@ -681,6 +683,7 @@ fn extract_type_and_format(
 
 /// Extracts field information including type, format, and nullable flag from OpenAPI schema
 fn extract_field_info(
+    parent_name: &str,
     field_name: &str,
     schema: &ReferenceOr<Schema>,
     all_schemas: &IndexMap<String, ReferenceOr<Schema>>,
@@ -692,13 +695,14 @@ fn extract_field_info(
         ReferenceOr::Reference { reference } => {
             let is_array_ref = false;
             let mut is_nullable = false;
-            let mut custom_attrs = None;
             let mut validation_rules = None;
 
             if let Some(type_name) = reference.strip_prefix("#/components/schemas/") {
                 if let Some(ReferenceOr::Item(schema)) = all_schemas.get(type_name) {
                     is_nullable = schema.schema_data.nullable;
-                    custom_attrs = extract_custom_attrs(schema);
+                    // x-rust-attrs on the referenced schema are type-level attributes
+                    // already applied to that type's own definition. Do not propagate
+                    // them to the field that references it.
                     validation_rules = extract_validation_rules(schema);
                 }
             }
@@ -708,7 +712,7 @@ fn extract_field_info(
                 is_array_ref,
                 None,
                 None,
-                custom_attrs,
+                None,
                 validation_rules,
             )
         }
@@ -723,16 +727,16 @@ fn extract_field_info(
             let is_nullable = schema.schema_data.nullable;
             let is_array_ref = matches!(schema.schema_kind, SchemaKind::Type(Type::Array(_)));
             let description = schema.schema_data.description.clone();
-            let custom_attrs = extract_custom_attrs(schema);
             let validation_rules = extract_validation_rules(schema);
 
             let maybe_enum = match &schema.schema_kind {
                 SchemaKind::Type(Type::String(s)) if !s.enumeration.is_empty() => {
                     let variants: Vec<String> =
                         s.enumeration.iter().filter_map(|v| v.clone()).collect();
-                    field_type = to_pascal_case(field_name);
+                    let enum_name = format!("{}{}", parent_name, to_pascal_case(field_name));
+                    field_type = enum_name.clone();
                     Some(ModelType::Enum(EnumModel {
-                        name: to_pascal_case(field_name),
+                        name: enum_name,
                         variants,
                         description: schema.schema_data.description.clone(),
                         custom_attrs: extract_custom_attrs(schema),
@@ -783,12 +787,20 @@ fn extract_field_info(
                 }
                 _ => None,
             };
+            // When an inline enum is generated from this field, x-rust-attrs belong
+            // on the enum type (already captured in the EnumModel above). Don't
+            // also emit them as struct field attributes.
+            let field_custom_attrs = if maybe_enum.is_some() {
+                None
+            } else {
+                extract_custom_attrs(schema)
+            };
             (
                 is_nullable,
                 is_array_ref,
                 maybe_enum,
                 description,
-                custom_attrs,
+                field_custom_attrs,
                 validation_rules,
             )
         }
@@ -809,7 +821,7 @@ fn extract_field_info(
 }
 
 fn resolve_all_of_fields(
-    _name: &str,
+    name: &str,
     all_of: &[ReferenceOr<Schema>],
     all_schemas: &IndexMap<String, ReferenceOr<Schema>>,
 ) -> Result<(Vec<Field>, Vec<ModelType>)> {
@@ -832,11 +844,22 @@ fn resolve_all_of_fields(
         }
     }
 
-    // Try hard to replace all_fields entries that are serde_json::Value
+    // Primitive Rust types that a base schema may use as a placeholder. A later
+    // allOf component that re-declares the same field with a different type is
+    // narrowing the field (e.g. a plain `string` base narrowed to a string enum),
+    // so the more specific incoming type should win.
+    const PRIMITIVE_TYPES: &[&str] = &["String", "i64", "f64", "bool"];
+
+    // Try hard to replace all_fields entries that are serde_json::Value or a
+    // primitive placeholder with a more specific type provided by a later allOf
+    // component.
     // Notes:
     //  - Most of the substitions are fairly straightforward, Value, Optional Value.
     //  - HashMap is more complex to understand, we are replacing a Value HashMap
     //    with an actual structure type
+    //  - A base schema may declare a field as a primitive (e.g. `String`) while a
+    //    composing schema narrows it to a named type (e.g. an inline string enum).
+    //    The named type (more specific) wins.
     fn less_value(fields: Vec<Field>, all_fields: &mut IndexMap<String, Field>) {
         for field in fields {
             if let Some(existing_field) = all_fields.get_mut(&field.name) {
@@ -859,6 +882,15 @@ fn resolve_all_of_fields(
                     existing_field.field_type = format!("Vec<{}>", field.field_type);
                 } else if existing_field.field_type == "Option<Vec<serde_json::Value>>" {
                     existing_field.field_type = format!("Option<Vec<{}>>", field.field_type);
+                // Primitive narrowed to a more specific named type by a later
+                // allOf component (e.g. `String` -> a string enum type).
+                // serde_json::Value is a generic fallback, not a narrowing -
+                // a primitive must not be replaced by something less specific.
+                } else if PRIMITIVE_TYPES.contains(&existing_field.field_type.as_str())
+                    && !PRIMITIVE_TYPES.contains(&field.field_type.as_str())
+                    && field.field_type != "serde_json::Value"
+                {
+                    existing_field.field_type = field.field_type;
                 }
             } else {
                 all_fields.insert(field.name.clone(), field);
@@ -873,7 +905,7 @@ fn resolve_all_of_fields(
                 if let Some(schema_name) = reference.strip_prefix("#/components/schemas/") {
                     if let Some(referenced_schema) = all_schemas.get(schema_name) {
                         let (fields, inline_models) =
-                            extract_fields_from_schema(referenced_schema, all_schemas)?;
+                            extract_fields_from_schema(name, referenced_schema, all_schemas)?;
                         // If we have an all_fields entry that is of type serde_json::Value, then we should replace it.
                         less_value(fields, &mut all_fields);
                         models.extend(inline_models);
@@ -881,7 +913,8 @@ fn resolve_all_of_fields(
                 }
             }
             ReferenceOr::Item(_schema) => {
-                let (fields, inline_models) = extract_fields_from_schema(schema_ref, all_schemas)?;
+                let (fields, inline_models) =
+                    extract_fields_from_schema(name, schema_ref, all_schemas)?;
                 // If we have an all_fields entry that is of type serde_json::Value, then we should replace it.
                 less_value(fields, &mut all_fields);
                 models.extend(inline_models);
@@ -983,8 +1016,11 @@ fn resolve_union_variants(
                                     primitive_type: None,
                                 });
                             } else {
-                                let (fields, inline_models) =
-                                    extract_fields_from_schema(referenced_schema, all_schemas)?;
+                                let (fields, inline_models) = extract_fields_from_schema(
+                                    schema_name,
+                                    referenced_schema,
+                                    all_schemas,
+                                )?;
                                 variants.push(UnionVariant {
                                     name: to_pascal_case(schema_name),
                                     fields,
@@ -1031,7 +1067,7 @@ fn resolve_union_variants(
 
                 _ => {
                     let (fields, inline_models) =
-                        extract_fields_from_schema(schema_ref, all_schemas)?;
+                        extract_fields_from_schema(name, schema_ref, all_schemas)?;
                     let variant_name = format!("Variant{index}");
                     variants.push(UnionVariant {
                         name: variant_name,
@@ -1048,8 +1084,9 @@ fn resolve_union_variants(
 }
 
 fn extract_fields_from_schema(
+    parent_name: &str,
     schema_ref: &ReferenceOr<Schema>,
-    _all_schemas: &IndexMap<String, ReferenceOr<Schema>>,
+    all_schemas: &IndexMap<String, ReferenceOr<Schema>>,
 ) -> Result<(Vec<Field>, Vec<ModelType>)> {
     let mut fields = Vec::new();
     let mut inline_models = Vec::new();
@@ -1062,16 +1099,18 @@ fn extract_fields_from_schema(
                     for (field_name, field_schema) in &obj.properties {
                         let (field_info, inline_model) = match field_schema {
                             ReferenceOr::Item(boxed_schema) => extract_field_info(
+                                parent_name,
                                 field_name,
                                 &ReferenceOr::Item((**boxed_schema).clone()),
-                                _all_schemas,
+                                all_schemas,
                             )?,
                             ReferenceOr::Reference { reference } => extract_field_info(
+                                parent_name,
                                 field_name,
                                 &ReferenceOr::Reference {
                                     reference: reference.clone(),
                                 },
-                                _all_schemas,
+                                all_schemas,
                             )?,
                         };
 
@@ -1983,6 +2022,268 @@ mod tests {
                 assert!(name_field.unwrap().custom_attrs.is_none());
             }
             _ => panic!("Expected Struct"),
+        }
+    }
+
+    // Two structs each having a field named `type` with different inline enum values.
+    // The generator must produce two distinct enum types rather than colliding on the
+    // shared name `Type`.
+    #[test]
+    fn test_inline_enum_fields_on_different_structs_get_unique_names() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test API", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "SignalA": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["variant_a"]
+                            }
+                        }
+                    },
+                    "SignalB": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["variant_b"]
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        // Both enum types must be generated - neither should be dropped by deduplication.
+        let signal_a_type = models.iter().find(|m| m.name() == "SignalAType");
+        let signal_b_type = models.iter().find(|m| m.name() == "SignalBType");
+
+        assert!(
+            signal_a_type.is_some(),
+            "Expected SignalAType enum to be generated"
+        );
+        assert!(
+            signal_b_type.is_some(),
+            "Expected SignalBType enum to be generated"
+        );
+
+        // Each enum must contain only its own variant.
+        match signal_a_type.unwrap() {
+            ModelType::Enum(e) => {
+                assert_eq!(e.variants, vec!["variant_a"]);
+            }
+            _ => panic!("Expected Enum for SignalAType"),
+        }
+        match signal_b_type.unwrap() {
+            ModelType::Enum(e) => {
+                assert_eq!(e.variants, vec!["variant_b"]);
+            }
+            _ => panic!("Expected Enum for SignalBType"),
+        }
+
+        // The struct fields must reference the qualified enum names.
+        let signal_a = models.iter().find(|m| m.name() == "SignalA");
+        assert!(signal_a.is_some(), "Expected SignalA struct");
+        if let Some(ModelType::Struct(s)) = signal_a {
+            let type_field = s.fields.iter().find(|f| f.name == "type").unwrap();
+            assert_eq!(type_field.field_type, "SignalAType");
+        }
+
+        let signal_b = models.iter().find(|m| m.name() == "SignalB");
+        assert!(signal_b.is_some(), "Expected SignalB struct");
+        if let Some(ModelType::Struct(s)) = signal_b {
+            let type_field = s.fields.iter().find(|f| f.name == "type").unwrap();
+            assert_eq!(type_field.field_type, "SignalBType");
+        }
+    }
+
+    // x-rust-attrs on an inline enum property (e.g. derive macros for the generated
+    // enum type) must not leak into the parent struct as field-level attributes.
+    // Before the fix this caused `#[derive(...)]` to appear inside the struct body,
+    // which is invalid Rust.
+    #[test]
+    fn test_x_rust_attrs_on_inline_enum_field_go_to_enum_not_field() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test API", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Signal": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["started", "stopped"],
+                                "x-rust-attrs": [
+                                    "#[derive(derive_more::Display, Debug, Clone)]"
+                                ]
+                            },
+                            "name": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        // The generated enum must carry the custom attrs.
+        let kind_enum = models.iter().find(|m| m.name() == "SignalKind");
+        assert!(
+            kind_enum.is_some(),
+            "Expected SignalKind enum to be generated"
+        );
+        match kind_enum.unwrap() {
+            ModelType::Enum(e) => {
+                assert!(
+                    e.custom_attrs.is_some(),
+                    "x-rust-attrs should be on the generated enum"
+                );
+                let attrs = e.custom_attrs.as_ref().unwrap();
+                assert!(attrs.iter().any(|a| a.contains("derive")));
+            }
+            _ => panic!("Expected Enum for SignalKind"),
+        }
+
+        // The parent struct field must NOT carry the attrs - emitting derive macros
+        // as field attributes is invalid Rust.
+        let signal = models.iter().find(|m| m.name() == "Signal");
+        assert!(signal.is_some(), "Expected Signal struct");
+        if let Some(ModelType::Struct(s)) = signal {
+            let kind_field = s.fields.iter().find(|f| f.name == "kind").unwrap();
+            assert!(
+                kind_field.custom_attrs.is_none(),
+                "x-rust-attrs must not appear on the struct field when they target a generated inline enum"
+            );
+        }
+    }
+
+    // A base schema declares fields as plain primitives (String, i64). A composing
+    // schema narrows those same fields to specific named types via allOf. The
+    // composed struct must use the more specific types, not the primitive placeholders.
+    #[test]
+    fn test_allof_primitive_field_narrowed_to_specific_type() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test API", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "BaseSignal": {
+                        "type": "object",
+                        "required": ["type"],
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "description": "The signal type identifier."
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Human-readable label."
+                            }
+                        }
+                    },
+                    "ConcreteSignal": {
+                        "allOf": [
+                            { "$ref": "#/components/schemas/BaseSignal" },
+                            {
+                                "type": "object",
+                                "required": ["type"],
+                                "properties": {
+                                    "type": {
+                                        "type": "string",
+                                        "enum": ["concrete"]
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        // The inline enum for `type` must be generated.
+        let type_enum = models.iter().find(|m| m.name() == "ConcreteSignalType");
+        assert!(
+            type_enum.is_some(),
+            "Expected ConcreteSignalType enum to be generated"
+        );
+        match type_enum.unwrap() {
+            ModelType::Enum(e) => assert_eq!(e.variants, vec!["concrete"]),
+            _ => panic!("Expected Enum for ConcreteSignalType"),
+        }
+
+        // The composed struct must use the specific enum type, not plain String.
+        let concrete = models.iter().find(|m| m.name() == "ConcreteSignal");
+        assert!(concrete.is_some(), "Expected ConcreteSignal model");
+        if let Some(ModelType::Composition(c)) = concrete {
+            let type_field = c.all_fields.iter().find(|f| f.name == "type").unwrap();
+            assert_eq!(
+                type_field.field_type, "ConcreteSignalType",
+                "allOf should narrow plain String to the more specific enum type"
+            );
+        } else {
+            panic!("Expected ConcreteSignal to be a Composition");
+        }
+    }
+
+    // x-rust-attrs on a $ref target schema are type-level attributes that belong
+    // to the type definition. They must NOT be propagated to the field that
+    // references that type, as emitting #[derive(...)] at field position is
+    // invalid Rust.
+    #[test]
+    fn test_x_rust_attrs_from_ref_target_not_propagated_to_field() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test API", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Address": {
+                        "type": "object",
+                        "x-rust-attrs": ["#[derive(Hash, Eq, PartialEq)]"],
+                        "properties": {
+                            "street": { "type": "string" }
+                        }
+                    },
+                    "Person": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "address": { "$ref": "#/components/schemas/Address" }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        let person = models.iter().find(|m| m.name() == "Person");
+        assert!(person.is_some(), "Expected Person model");
+
+        if let Some(ModelType::Struct(s)) = person {
+            let address_field = s.fields.iter().find(|f| f.name == "address").unwrap();
+            assert_eq!(address_field.field_type, "Address");
+            assert!(
+                address_field.custom_attrs.is_none(),
+                "x-rust-attrs from the referenced Address type must not appear on the Person.address field"
+            );
+        } else {
+            panic!("Expected Person to be a Struct");
         }
     }
 }
