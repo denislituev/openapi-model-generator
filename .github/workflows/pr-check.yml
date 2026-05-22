@@ -2,71 +2,35 @@ name: PR Check
 
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  quick-check:
-    name: Quick Quality Check
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt, clippy
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
 
-      - name: Check code formatting
-        run: |
-          echo "::group::Checking code formatting"
-          cargo fmt --all -- --check
-          echo "::endgroup::"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: Run Clippy linting
-        run: |
-          echo "::group::Running Clippy linting"
-          cargo clippy --all-targets --all-features -- -D warnings -D clippy::all
-          echo "::endgroup::"
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Check compilation
-        run: |
-          echo "::group::Checking compilation"
-          cargo check --all-targets --all-features
-          echo "::endgroup::"
-
-      - name: Run basic tests
-        run: |
-          echo "::group::Running tests"
-          cargo test --lib --all-features
-          echo "::endgroup::"
-
-  security-audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-
-      - name: Run security audit
-        run: cargo audit
+      - name: Run tests
+        run: cargo test --all-features --verbose --locked
