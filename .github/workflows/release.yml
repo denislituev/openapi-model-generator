@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g., v0.6.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C strip=symbols"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-crate:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish
+        run: cargo publish --locked || echo "Already published"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: omg-linux-amd64
+
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: omg-linux-arm64
+            use-cross: true
+
+          - os: macos-15
+            target: x86_64-apple-darwin
+            artifact: omg-macos-amd64
+
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: omg-macos-arm64
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: omg-windows-amd64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        if: matrix.use-cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.use-cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --locked
+          else
+            cargo build --release --target ${{ matrix.target }} --locked
+          fi
+        shell: bash
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          BIN=target/${{ matrix.target }}/release/omg
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="${BIN}.exe"; fi
+          cp "$BIN" dist/${{ matrix.artifact }}
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            powershell -Command "(Get-FileHash -Path '${{ matrix.artifact }}' -Algorithm SHA256).Hash.ToLower() + '  ${{ matrix.artifact }}'" > ${{ matrix.artifact }}.sha256
+          else
+            shasum -a 256 ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+          fi
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [publish-crate, build-binaries]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Get tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          files: dist/**/*
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
