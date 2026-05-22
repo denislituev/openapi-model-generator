@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-05-22
+
+### Fixed
+- **Inline Enum Name Collision**: Fixed a bug where multiple structs with inline string enums on fields sharing the same name (e.g. `type`) produced colliding enum names. Inline enum names are now qualified with the parent struct name (e.g. `SignalAType`, `SignalBType`).
+
+- **x-rust-attrs on Inline Enum Fields**: Fixed `x-rust-attrs` leaking from inline enum fields into the parent struct as invalid field-level attributes. Custom attributes now stay on the generated enum type only.
+
+- **allOf Primitive Narrowing**: Fixed a bug where a base schema field declared as a primitive (`String`, `i64`, etc.) was not replaced by a more specific type (e.g. an inline string enum) from a composing allOf schema.
+
+- **x-rust-attrs from $ref Target**: Fixed `x-rust-attrs` from a referenced schema being incorrectly propagated to the referencing field, producing invalid Rust (e.g. `#[derive(...)]` inside a struct body).
+
 ## [0.6.0] - 2026-03-22
 
 ### Added
