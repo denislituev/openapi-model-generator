@@ -2286,4 +2286,87 @@ mod tests {
             panic!("Expected Person to be a Struct");
         }
     }
+
+    #[test]
+    fn test_schema_level_nullable_ref_makes_field_optional() {
+        // A field whose $ref target schema has `nullable: true` at the schema level
+        // must produce is_nullable = true, resulting in Option<T> in the output.
+        let openapi_spec: OpenAPI = serde_json::from_value(serde_json::json!({
+            "openapi": "3.0.3",
+            "info": { "title": "Test", "version": "0.1.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "NullableString": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "Container": {
+                        "type": "object",
+                        "required": ["value"],
+                        "properties": {
+                            "value": {
+                                "$ref": "#/components/schemas/NullableString"
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        let container = models.iter().find(|m| m.name() == "Container");
+        assert!(container.is_some(), "Expected Container model");
+
+        if let Some(ModelType::Struct(s)) = container {
+            let value_field = s.fields.iter().find(|f| f.name == "value").unwrap();
+            assert!(
+                value_field.is_nullable,
+                "Field referencing a nullable schema must be marked is_nullable"
+            );
+        } else {
+            panic!("Expected Container to be a Struct");
+        }
+    }
+
+    #[test]
+    fn test_inline_nullable_field_is_optional() {
+        // An inline field with `nullable: true` directly on the property must be is_nullable.
+        let openapi_spec: OpenAPI = serde_json::from_value(serde_json::json!({
+            "openapi": "3.0.3",
+            "info": { "title": "Test", "version": "0.1.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Widget": {
+                        "type": "object",
+                        "properties": {
+                            "label": {
+                                "type": "string",
+                                "nullable": true
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        let widget = models.iter().find(|m| m.name() == "Widget");
+        assert!(widget.is_some(), "Expected Widget model");
+
+        if let Some(ModelType::Struct(s)) = widget {
+            let label_field = s.fields.iter().find(|f| f.name == "label").unwrap();
+            assert!(
+                label_field.is_nullable,
+                "Inline field with nullable: true must be marked is_nullable"
+            );
+        } else {
+            panic!("Expected Widget to be a Struct");
+        }
+    }
 }

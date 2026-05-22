@@ -143,6 +143,21 @@ fn has_custom_serde(custom_attrs: &Option<Vec<String>>) -> bool {
     }
 }
 
+/// Generates a `impl std::fmt::Display` block for a named type, unless custom_attrs
+/// already contains a Display derive. Structs use `{:?}` (Debug) as a fallback;
+/// for enums and unions the caller supplies the match body via `match_arms`.
+fn generate_display_impl(name: &str, custom_attrs: &Option<Vec<String>>, body: &str) -> String {
+    let has_display = custom_attrs
+        .as_ref()
+        .is_some_and(|attrs| attrs.iter().any(|a| a.contains("Display")));
+    if has_display {
+        return String::new();
+    }
+    format!(
+        "impl std::fmt::Display for {name} {{\n    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n{body}    }}\n}}\n"
+    )
+}
+
 /// Generates custom attributes from x-rust-attrs
 fn generate_custom_attrs(custom_attrs: &Option<Vec<String>>) -> String {
     if let Some(attrs) = custom_attrs {
@@ -216,7 +231,7 @@ pub fn generate_models(
     }
 
     if needs_validator {
-        output.push_str("use validator::Validator;\n");
+        output.push_str("use validator::Validate;\n");
     }
 
     if needs_datetime || needs_date {
@@ -329,24 +344,14 @@ fn generate_model(
 
     output.push_str(&generate_custom_attrs(&model.custom_attrs));
 
-    // Check if any fields have validation rules
-    let has_validation = model.fields.iter().any(|f| f.validation_rules.is_some());
-
-    // Mark that we need validator import if any field has validation
-    if has_validation {
-        *needs_validator = true;
+    // First pass over fields: resolve types and generate field bodies, tracking
+    // whether any #[validate(...)] attrs are needed. This lets us emit the correct
+    // derive line once without fragile byte-range patching.
+    struct FieldOutput {
+        body: String,
+        needs_validate: bool,
     }
-
-    // Only add default derive if custom_attrs doesn't already contain a derive directive
-    if !has_custom_derive(&model.custom_attrs) {
-        if has_validation {
-            output.push_str("#[derive(Debug, Clone, Serialize, Deserialize, Validator)]\n");
-        } else {
-            output.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
-        }
-    }
-
-    output.push_str(&format!("pub struct {} {{\n", model.name));
+    let mut field_outputs: Vec<FieldOutput> = Vec::with_capacity(model.fields.len());
 
     for field in &model.fields {
         let field_type = match field.field_type.as_str() {
@@ -370,56 +375,78 @@ fn generate_model(
             lowercased_name = format!("r#{lowercased_name}")
         }
 
-        // Add field description if present
-        output.push_str(&generate_description_docs(&field.description, "", "    "));
-
-        // Field-level custom attributes (e.g. #[serde(rename = "...")])
-        if let Some(attrs) = &field.custom_attrs {
-            for attr in attrs {
-                output.push_str(&format!("    {attr}\n"));
-            }
-        }
-
-        // Calculate full field type before generating validator attributes
         let is_optional = !field.is_required || field.is_nullable;
-
         let base_type = if field.is_array_ref {
             format!("Vec<{field_type}>")
         } else {
             field_type.to_string()
         };
-
         let full_field_type = if is_optional {
             format!("Option<{base_type}>")
         } else {
             base_type
         };
 
-        // Add validator attributes if the field has validation rules
+        let mut field_body = String::new();
+        field_body.push_str(&generate_description_docs(&field.description, "", "    "));
+
+        if let Some(attrs) = &field.custom_attrs {
+            for attr in attrs {
+                field_body.push_str(&format!("    {attr}\n"));
+            }
+        }
+
+        let mut needs_validate = false;
         if let Some(rules) = &field.validation_rules {
-            output.push_str(&generate_validator_attrs(rules, &full_field_type));
+            let attrs = generate_validator_attrs(rules, &full_field_type);
+            if !attrs.is_empty() {
+                needs_validate = true;
+                field_body.push_str(&attrs);
+            }
         }
 
-        // Only add serde rename if the Rust field name differs from the original field name
         if lowercased_name != field.name {
-            output.push_str(&format!("    #[serde(rename = \"{}\")]\n", field.name));
+            field_body.push_str(&format!("    #[serde(rename = \"{}\")]\n", field.name));
         }
-
         if field.should_flatten() {
-            output.push_str("    #[serde(flatten)]\n");
+            field_body.push_str("    #[serde(flatten)]\n");
         }
+        field_body.push_str(&format!("    pub {lowercased_name}: {full_field_type},\n"));
 
-        output.push_str(&format!("    pub {lowercased_name}: {full_field_type},\n"));
+        field_outputs.push(FieldOutput {
+            body: field_body,
+            needs_validate,
+        });
     }
 
-    output.push_str("}\n\n");
+    let any_validate_attrs = field_outputs.iter().any(|f| f.needs_validate);
+
+    if !has_custom_derive(&model.custom_attrs) {
+        if any_validate_attrs {
+            *needs_validator = true;
+            output.push_str("#[derive(Debug, Clone, Serialize, Deserialize, Validate)]\n");
+        } else {
+            output.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+        }
+    }
+
+    output.push_str(&format!("pub struct {} {{\n", model.name));
+    for fo in field_outputs {
+        output.push_str(&fo.body);
+    }
+
+    output.push_str("}\n");
+    output.push_str(&generate_display_impl(
+        &model.name,
+        &model.custom_attrs,
+        "        write!(f, \"{:?}\", self)\n",
+    ));
+    output.push('\n');
     Ok(output)
 }
 
 fn generate_request_model(request: &RequestModel) -> Result<String> {
     let mut output = String::new();
-    tracing::info!("Generating request model");
-    tracing::info!("{:#?}", request);
 
     if request.name.is_empty() || request.name == EMPTY_REQUEST_NAME {
         return Ok(String::new());
@@ -489,6 +516,23 @@ fn generate_union(union: &UnionModel) -> Result<String> {
     }
 
     output.push_str("}\n");
+
+    let match_arms = union
+        .variants
+        .iter()
+        .map(|v| {
+            format!(
+                "            Self::{}(inner) => write!(f, \"{{}}\", inner),\n",
+                v.name
+            )
+        })
+        .collect::<String>();
+    output.push_str(&generate_display_impl(
+        &union.name,
+        &union.custom_attrs,
+        &format!("        match self {{\n{match_arms}        }}\n"),
+    ));
+
     Ok(output)
 }
 
@@ -565,6 +609,11 @@ fn generate_composition(
     }
 
     output.push_str("}\n");
+    output.push_str(&generate_display_impl(
+        &comp.name,
+        &comp.custom_attrs,
+        "        write!(f, \"{:?}\", self)\n",
+    ));
     Ok(output)
 }
 
@@ -586,6 +635,9 @@ fn generate_enum(enum_model: &EnumModel) -> Result<String> {
 
     output.push_str(&format!("pub enum {} {{\n", enum_model.name));
 
+    // Collect (rust_name, display_value) pairs for the Display impl below.
+    let mut variant_display: Vec<(String, String)> = Vec::new();
+
     for (i, variant) in enum_model.variants.iter().enumerate() {
         let original = variant.clone();
 
@@ -593,12 +645,15 @@ fn generate_enum(enum_model: &EnumModel) -> Result<String> {
 
         let serde_rename = if is_reserved_word(&rust_name) {
             rust_name.push_str("Value");
-            Some(original)
+            Some(original.clone())
         } else if rust_name != original {
-            Some(original)
+            Some(original.clone())
         } else {
             None
         };
+
+        let display_value = serde_rename.as_deref().unwrap_or(&original).to_string();
+        variant_display.push((rust_name.clone(), display_value));
 
         if let Some(rename) = serde_rename {
             output.push_str(&format!("    #[serde(rename = \"{rename}\")]\n"));
@@ -612,6 +667,19 @@ fn generate_enum(enum_model: &EnumModel) -> Result<String> {
     }
 
     output.push_str("}\n");
+
+    let match_arms = variant_display
+        .iter()
+        .map(|(rust_name, display_value)| {
+            format!("            Self::{rust_name} => write!(f, \"{display_value}\"),\n")
+        })
+        .collect::<String>();
+    output.push_str(&generate_display_impl(
+        &enum_model.name,
+        &enum_model.custom_attrs,
+        &format!("        match self {{\n{match_arms}        }}\n"),
+    ));
+
     Ok(output)
 }
 
