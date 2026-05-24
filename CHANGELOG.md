@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-05-24
+
+### Added
+- **`--display` CLI flag**: Opt-in generation of `impl std::fmt::Display` for enums, unions, structs, and compositions. Uses serde-rename values for enum/union variants and `Debug` as a fallback for structs. Skipped if `x-rust-attrs` already includes a custom `Display` derive.
+
+### Fixed
+- **Validator trait name**: Fixed wrong trait name in generated imports — `validator::Validator` → `validator::Validate`.
+
+- **Validate derive placement**: Replaced fragile single-pass struct generation with a two-pass approach. The `#[derive(Validate)]` line is now emitted only after examining all fields, eliminating incorrect positioning when validation attributes are present.
+
+- **Removed debug tracing**: Removed two `tracing::info!` calls that dumped internal model state in `generate_request_model`.
+
+### Tests
+- Added `test_schema_level_nullable_ref_makes_field_optional` — verifies nullable propagation via `$ref`.
+- Added `test_inline_nullable_field_is_optional` — verifies nullable propagation on inline fields.
+
 ## [0.6.1] - 2026-05-22
 
 ### Fixed

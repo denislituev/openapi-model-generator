@@ -47,7 +47,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-openapi-model-generator = "0.6.1"
+openapi-model-generator = "0.6.2"
 ```
 
 ## Usage
@@ -66,6 +66,9 @@ omg -i path/to/openapi.yaml -o ./generated -m requests
 
 # Generate models and response types
 omg -i path/to/openapi.yaml -o ./generated -m responses
+
+# Generate with Display implementations
+omg -i spec.yaml -o ./generated --display
 ```
 
 ### Parameters
@@ -85,7 +88,7 @@ omg -i path/to/openapi.yaml -o ./generated -m responses
 ### Library Usage
 
 ```rust
-use openapi_model_generator::{parse_openapi, generate_models};
+use openapi_model_generator::{parse_openapi, generate_models, GenerateMode};
 use std::fs;
 
 // Parse OpenAPI specification
