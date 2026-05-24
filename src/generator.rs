@@ -147,6 +147,12 @@ fn has_custom_serde(custom_attrs: &Option<Vec<String>>) -> bool {
 /// already contains a Display derive. Structs use `{:?}` (Debug) as a fallback;
 /// for enums and unions the caller supplies the match body via `match_arms`.
 fn generate_display_impl(name: &str, custom_attrs: &Option<Vec<String>>, body: &str) -> String {
+    // TODO: `.contains("Display")` is a loose heuristic - it correctly catches
+    // `derive_more::Display` and `#[display(...)]` format attrs, but could
+    // false-positive on unrelated attribute strings containing "Display".
+    // The proper fix is a dedicated spec extension (`x-rust-display: false`)
+    // that explicitly opts a type out of Display generation, rather than
+    // inferring intent from x-rust-attrs content.
     let has_display = custom_attrs
         .as_ref()
         .is_some_and(|attrs| attrs.iter().any(|a| a.contains("Display")));
@@ -175,6 +181,7 @@ pub fn generate_models(
     requests: &[RequestModel],
     responses: &[ResponseModel],
     mode: GenerateMode,
+    display: bool,
 ) -> Result<String> {
     // First, generate all model code to determine which imports are needed
     let mut models_code = String::new();
@@ -188,16 +195,17 @@ pub fn generate_models(
                     model,
                     &mut required_uses,
                     &mut needs_validator,
+                    display,
                 )?);
             }
             ModelType::Union(union) => {
-                models_code.push_str(&generate_union(union)?);
+                models_code.push_str(&generate_union(union, display)?);
             }
             ModelType::Composition(comp) => {
-                models_code.push_str(&generate_composition(comp, &mut required_uses)?);
+                models_code.push_str(&generate_composition(comp, &mut required_uses, display)?);
             }
             ModelType::Enum(enum_model) => {
-                models_code.push_str(&generate_enum(enum_model)?);
+                models_code.push_str(&generate_enum(enum_model, display)?);
             }
             ModelType::TypeAlias(type_alias) => {
                 models_code.push_str(&generate_type_alias(type_alias)?);
@@ -333,6 +341,7 @@ fn generate_model(
     model: &Model,
     required_uses: &mut RequiredUses,
     needs_validator: &mut bool,
+    display: bool,
 ) -> Result<String> {
     let mut output = String::new();
 
@@ -436,11 +445,13 @@ fn generate_model(
     }
 
     output.push_str("}\n");
-    output.push_str(&generate_display_impl(
-        &model.name,
-        &model.custom_attrs,
-        "        write!(f, \"{:?}\", self)\n",
-    ));
+    if display {
+        output.push_str(&generate_display_impl(
+            &model.name,
+            &model.custom_attrs,
+            "        write!(f, \"{:?}\", self)\n",
+        ));
+    }
     output.push('\n');
     Ok(output)
 }
@@ -483,7 +494,7 @@ fn generate_response_model(response: &ResponseModel) -> Result<String> {
     Ok(output)
 }
 
-fn generate_union(union: &UnionModel) -> Result<String> {
+fn generate_union(union: &UnionModel, display: bool) -> Result<String> {
     let mut output = String::new();
 
     output.push_str(&format!(
@@ -517,21 +528,23 @@ fn generate_union(union: &UnionModel) -> Result<String> {
 
     output.push_str("}\n");
 
-    let match_arms = union
-        .variants
-        .iter()
-        .map(|v| {
-            format!(
-                "            Self::{}(inner) => write!(f, \"{{}}\", inner),\n",
-                v.name
-            )
-        })
-        .collect::<String>();
-    output.push_str(&generate_display_impl(
-        &union.name,
-        &union.custom_attrs,
-        &format!("        match self {{\n{match_arms}        }}\n"),
-    ));
+    if display {
+        let match_arms = union
+            .variants
+            .iter()
+            .map(|v| {
+                format!(
+                    "            Self::{}(inner) => write!(f, \"{{}}\", inner),\n",
+                    v.name
+                )
+            })
+            .collect::<String>();
+        output.push_str(&generate_display_impl(
+            &union.name,
+            &union.custom_attrs,
+            &format!("        match self {{\n{match_arms}        }}\n"),
+        ));
+    }
 
     Ok(output)
 }
@@ -539,6 +552,7 @@ fn generate_union(union: &UnionModel) -> Result<String> {
 fn generate_composition(
     comp: &CompositionModel,
     required_uses: &mut RequiredUses,
+    display: bool,
 ) -> Result<String> {
     let mut output = String::new();
 
@@ -609,15 +623,17 @@ fn generate_composition(
     }
 
     output.push_str("}\n");
-    output.push_str(&generate_display_impl(
-        &comp.name,
-        &comp.custom_attrs,
-        "        write!(f, \"{:?}\", self)\n",
-    ));
+    if display {
+        output.push_str(&generate_display_impl(
+            &comp.name,
+            &comp.custom_attrs,
+            "        write!(f, \"{:?}\", self)\n",
+        ));
+    }
     Ok(output)
 }
 
-fn generate_enum(enum_model: &EnumModel) -> Result<String> {
+fn generate_enum(enum_model: &EnumModel, display: bool) -> Result<String> {
     let mut output = String::new();
 
     output.push_str(&generate_description_docs(
@@ -652,7 +668,11 @@ fn generate_enum(enum_model: &EnumModel) -> Result<String> {
             None
         };
 
-        let display_value = serde_rename.as_deref().unwrap_or(&original).to_string();
+        let display_value = serde_rename
+            .as_deref()
+            .unwrap_or(&original)
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
         variant_display.push((rust_name.clone(), display_value));
 
         if let Some(rename) = serde_rename {
@@ -668,17 +688,19 @@ fn generate_enum(enum_model: &EnumModel) -> Result<String> {
 
     output.push_str("}\n");
 
-    let match_arms = variant_display
-        .iter()
-        .map(|(rust_name, display_value)| {
-            format!("            Self::{rust_name} => write!(f, \"{display_value}\"),\n")
-        })
-        .collect::<String>();
-    output.push_str(&generate_display_impl(
-        &enum_model.name,
-        &enum_model.custom_attrs,
-        &format!("        match self {{\n{match_arms}        }}\n"),
-    ));
+    if display {
+        let match_arms = variant_display
+            .iter()
+            .map(|(rust_name, display_value)| {
+                format!("            Self::{rust_name} => write!(f, \"{display_value}\"),\n")
+            })
+            .collect::<String>();
+        output.push_str(&generate_display_impl(
+            &enum_model.name,
+            &enum_model.custom_attrs,
+            &format!("        match self {{\n{match_arms}        }}\n"),
+        ));
+    }
 
     Ok(output)
 }
@@ -755,4 +777,62 @@ pub fn generate_lib() -> Result<String> {
     code.push_str("pub mod models;\n");
 
     Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::EnumModel;
+
+    fn make_enum(variants: Vec<&str>) -> EnumModel {
+        EnumModel {
+            name: "TestEnum".to_string(),
+            description: None,
+            variants: variants.into_iter().map(String::from).collect(),
+            custom_attrs: None,
+        }
+    }
+
+    #[test]
+    fn test_enum_display_escapes_quotes_and_backslashes() {
+        // Enum values containing " or \ must be escaped in the generated write! string literal.
+        let model = make_enum(vec!["normal", r#"with"quote"#, r"with\backslash"]);
+        let output = generate_enum(&model, true).expect("generate_enum failed");
+
+        assert!(
+            output.contains(r#"write!(f, "with\"quote")"#),
+            "double quote should be escaped in Display impl:\n{output}"
+        );
+        assert!(
+            output.contains(r#"write!(f, "with\\backslash")"#),
+            "backslash should be escaped in Display impl:\n{output}"
+        );
+        assert!(
+            output.contains(r#"write!(f, "normal")"#),
+            "plain value should be unmodified:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_enum_no_display_when_flag_off() {
+        let model = make_enum(vec!["foo", "bar"]);
+        let output = generate_enum(&model, false).expect("generate_enum failed");
+        assert!(
+            !output.contains("impl std::fmt::Display"),
+            "Display impl should not be generated when display=false:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_enum_no_display_when_custom_attrs_has_display() {
+        let mut model = make_enum(vec!["foo"]);
+        model.custom_attrs = Some(vec![
+            "#[derive(derive_more::Display, Debug, Clone)]".to_string()
+        ]);
+        let output = generate_enum(&model, true).expect("generate_enum failed");
+        assert!(
+            !output.contains("impl std::fmt::Display"),
+            "Display impl should be skipped when x-rust-attrs already has Display:\n{output}"
+        );
+    }
 }

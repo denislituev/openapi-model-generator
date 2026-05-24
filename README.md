@@ -77,6 +77,10 @@ omg -i path/to/openapi.yaml -o ./generated -m responses
   - `requests` - Generate models and request types from API endpoints
   - `responses` - Generate models and response types from API endpoints
   - `all` - Generate everything (models, requests, and responses)
+- `--display` - Generate `impl std::fmt::Display` for all types (default: off)
+  - Enums and unions display their serde-rename value (e.g. `"config_sync"`)
+  - Structs and compositions fall back to `{:?}` (Debug)
+  - Types that already include a `Display` derive in `x-rust-attrs` are skipped
 
 ### Library Usage
 
@@ -90,7 +94,7 @@ let openapi: openapiv3::OpenAPI = serde_yaml::from_str(&openapi_spec)?;
 
 // Generate models
 let (models, requests, responses) = parse_openapi(&openapi)?;
-let generated_code = generate_models(&models, &requests, &responses)?;
+let generated_code = generate_models(&models, &requests, &responses, GenerateMode::ALL, false)?;
 
 // Write to file
 fs::write("models.rs", generated_code)?;
