@@ -73,7 +73,13 @@ fn main() -> Result<()> {
 
     let (models, requests, responses) = parser::parse_openapi(&openapi)?;
 
-    let rust_code = generator::generate_models(&models, &requests, &responses, args.mode.into())?;
+    let rust_code = generator::generate_models(
+        &models,
+        &requests,
+        &responses,
+        args.mode.into(),
+        args.display,
+    )?;
     let output_models_path = args.output.join("models.rs");
     fs::write(&output_models_path, rust_code.trim())?;
 
