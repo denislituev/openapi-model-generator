@@ -264,6 +264,16 @@ pub fn generate_models(
     Ok(output)
 }
 
+/// Format f64 as a Rust float literal, ensuring `0` becomes `0.0`.
+fn format_f64_literal(v: f64) -> String {
+    let s = v.to_string();
+    if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") {
+        s
+    } else {
+        format!("{v}.0")
+    }
+}
+
 /// Generate validator attributes based on validation rules
 fn generate_validator_attrs(rules: &crate::models::ValidationRules, field_type: &str) -> String {
     let mut attrs = String::new();
@@ -296,15 +306,33 @@ fn generate_validator_attrs(rules: &crate::models::ValidationRules, field_type: 
                 attrs.push_str(&format!("    #[regex(pattern = r\"{}\")]\n", pattern));
             }
         }
-        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
-        | "Option<i8>" | "Option<i16>" | "Option<i32>" | "Option<i64>" | "Option<u8>"
-        | "Option<u16>" | "Option<u32>" | "Option<u64>" | "Option<f32>" | "Option<f64>" => {
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "Option<i8>"
+        | "Option<i16>" | "Option<i32>" | "Option<i64>" | "Option<u8>" | "Option<u16>"
+        | "Option<u32>" | "Option<u64>" => {
             let mut range_attrs = Vec::new();
             if let Some(min) = rules.minimum {
-                range_attrs.push(format!("min = {}", min));
+                range_attrs.push(format!("min = {}", min as i64));
             }
             if let Some(max) = rules.maximum {
-                range_attrs.push(format!("max = {}", max));
+                range_attrs.push(format!("max = {}", max as i64));
+            }
+            if rules.exclusive_minimum || rules.exclusive_maximum {
+                range_attrs.push("exclusive = true".to_string());
+            }
+            if !range_attrs.is_empty() {
+                attrs.push_str(&format!(
+                    "    #[validate(range({}))]\n",
+                    range_attrs.join(", ")
+                ));
+            }
+        }
+        "f32" | "f64" | "Option<f32>" | "Option<f64>" => {
+            let mut range_attrs = Vec::new();
+            if let Some(min) = rules.minimum {
+                range_attrs.push(format!("min = {}", format_f64_literal(min)));
+            }
+            if let Some(max) = rules.maximum {
+                range_attrs.push(format!("max = {}", format_f64_literal(max)));
             }
             if rules.exclusive_minimum || rules.exclusive_maximum {
                 range_attrs.push("exclusive = true".to_string());
@@ -833,6 +861,55 @@ mod tests {
         assert!(
             !output.contains("impl std::fmt::Display"),
             "Display impl should be skipped when x-rust-attrs already has Display:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_float_range_uses_float_literals() {
+        // Regression test for issue #66: f64 fields must get float literals
+        // (e.g. `min = 0.0`) so the `Validate` derive infers f64, not i32.
+        let rules = crate::models::ValidationRules {
+            minimum: Some(0.0),
+            maximum: Some(100.0),
+            ..Default::default()
+        };
+
+        // Non-optional f64
+        let attrs = generate_validator_attrs(&rules, "f64");
+        assert!(
+            attrs.contains("min = 0.0"),
+            "f64 min should be a float literal:\n{attrs}"
+        );
+        assert!(
+            attrs.contains("max = 100.0"),
+            "f64 max should be a float literal:\n{attrs}"
+        );
+
+        // Optional f64
+        let attrs = generate_validator_attrs(&rules, "Option<f64>");
+        assert!(
+            attrs.contains("min = 0.0") && attrs.contains("max = 100.0"),
+            "Option<f64> range should use float literals:\n{attrs}"
+        );
+    }
+
+    #[test]
+    fn test_integer_range_uses_integer_literals() {
+        // Integer fields should keep integer literals (no `.0`).
+        let rules = crate::models::ValidationRules {
+            minimum: Some(0.0),
+            maximum: Some(100.0),
+            ..Default::default()
+        };
+
+        let attrs = generate_validator_attrs(&rules, "i64");
+        assert!(
+            attrs.contains("min = 0") && !attrs.contains("min = 0.0"),
+            "i64 min should be an integer literal:\n{attrs}"
+        );
+        assert!(
+            attrs.contains("max = 100") && !attrs.contains("max = 100.0"),
+            "i64 max should be an integer literal:\n{attrs}"
         );
     }
 }
