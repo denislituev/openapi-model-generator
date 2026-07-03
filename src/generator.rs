@@ -187,6 +187,7 @@ pub fn generate_models(
     let mut models_code = String::new();
     let mut required_uses = RequiredUses::empty();
     let mut needs_validator = false;
+    let mut needs_logos = false;
 
     for model_type in models {
         match model_type {
@@ -195,6 +196,7 @@ pub fn generate_models(
                     model,
                     &mut required_uses,
                     &mut needs_validator,
+                    &mut needs_logos,
                     display,
                 )?);
             }
@@ -240,6 +242,10 @@ pub fn generate_models(
 
     if needs_validator {
         output.push_str("use validator::Validate;\n");
+    }
+
+    if needs_logos {
+        output.push_str("use logos::Logos;\n");
     }
 
     if needs_datetime || needs_date {
@@ -341,6 +347,7 @@ fn generate_model(
     model: &Model,
     required_uses: &mut RequiredUses,
     needs_validator: &mut bool,
+    needs_logos: &mut bool,
     display: bool,
 ) -> Result<String> {
     let mut output = String::new();
@@ -354,11 +361,12 @@ fn generate_model(
     output.push_str(&generate_custom_attrs(&model.custom_attrs));
 
     // First pass over fields: resolve types and generate field bodies, tracking
-    // whether any #[validate(...)] attrs are needed. This lets us emit the correct
-    // derive line once without fragile byte-range patching.
+    // whether any #[validate(...)] or #[regex(...)] attrs are needed. This lets us
+    // emit the correct derive line once without fragile byte-range patching.
     struct FieldOutput {
         body: String,
         needs_validate: bool,
+        has_regex: bool,
     }
     let mut field_outputs: Vec<FieldOutput> = Vec::with_capacity(model.fields.len());
 
@@ -406,10 +414,14 @@ fn generate_model(
         }
 
         let mut needs_validate = false;
+        let mut has_regex = false;
         if let Some(rules) = &field.validation_rules {
             let attrs = generate_validator_attrs(rules, &full_field_type);
             if !attrs.is_empty() {
                 needs_validate = true;
+                if attrs.contains("#[regex(") {
+                    has_regex = true;
+                }
                 field_body.push_str(&attrs);
             }
         }
@@ -425,10 +437,14 @@ fn generate_model(
         field_outputs.push(FieldOutput {
             body: field_body,
             needs_validate,
+            has_regex,
         });
     }
 
     let any_validate_attrs = field_outputs.iter().any(|f| f.needs_validate);
+    if field_outputs.iter().any(|f| f.has_regex) {
+        *needs_logos = true;
+    }
 
     if !has_custom_derive(&model.custom_attrs) {
         if any_validate_attrs {
@@ -782,7 +798,7 @@ pub fn generate_lib() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::EnumModel;
+    use crate::models::{EnumModel, Field, Model, ModelType, ValidationRules};
 
     fn make_enum(variants: Vec<&str>) -> EnumModel {
         EnumModel {
@@ -820,6 +836,144 @@ mod tests {
         assert!(
             !output.contains("impl std::fmt::Display"),
             "Display impl should not be generated when display=false:\n{output}"
+        );
+    }
+
+    fn make_field_with_pattern(name: &str, pattern: &str) -> Field {
+        Field {
+            name: name.to_string(),
+            field_type: "String".to_string(),
+            format: String::new(),
+            is_required: true,
+            is_nullable: false,
+            is_array_ref: false,
+            description: None,
+            custom_attrs: None,
+            validation_rules: Some(ValidationRules {
+                min_length: None,
+                max_length: None,
+                pattern: Some(pattern.to_string()),
+                email: false,
+                url: false,
+                minimum: None,
+                maximum: None,
+                exclusive_minimum: false,
+                exclusive_maximum: false,
+                multiple_of: None,
+                min_items: None,
+                max_items: None,
+                unique_items: false,
+            }),
+        }
+    }
+
+    fn make_model_with_pattern_field() -> Model {
+        Model {
+            name: "MyModel".to_string(),
+            description: None,
+            custom_attrs: None,
+            fields: vec![make_field_with_pattern("value", "^[a-z]+$")],
+        }
+    }
+
+    fn make_model_without_pattern() -> Model {
+        Model {
+            name: "Plain".to_string(),
+            description: None,
+            custom_attrs: None,
+            fields: vec![Field {
+                name: "id".to_string(),
+                field_type: "String".to_string(),
+                format: String::new(),
+                is_required: true,
+                is_nullable: false,
+                is_array_ref: false,
+                description: None,
+                custom_attrs: None,
+                validation_rules: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_generate_model_sets_needs_logos_when_pattern_present() {
+        let model = make_model_with_pattern_field();
+        let mut required_uses = RequiredUses::empty();
+        let mut needs_validator = false;
+        let mut needs_logos = false;
+        generate_model(
+            &model,
+            &mut required_uses,
+            &mut needs_validator,
+            &mut needs_logos,
+            false,
+        )
+        .expect("generate_model failed");
+        assert!(
+            needs_logos,
+            "needs_logos should be true when a pattern rule is present"
+        );
+    }
+
+    #[test]
+    fn test_generate_model_does_not_set_needs_logos_without_pattern() {
+        let model = make_model_without_pattern();
+        let mut required_uses = RequiredUses::empty();
+        let mut needs_validator = false;
+        let mut needs_logos = false;
+        generate_model(
+            &model,
+            &mut required_uses,
+            &mut needs_validator,
+            &mut needs_logos,
+            false,
+        )
+        .expect("generate_model failed");
+        assert!(
+            !needs_logos,
+            "needs_logos should remain false when no pattern rule is present"
+        );
+    }
+
+    #[test]
+    fn test_generate_models_includes_logos_import_when_pattern_present() {
+        let models = vec![ModelType::Struct(make_model_with_pattern_field())];
+        let output = generate_models(&models, &[], &[], GenerateMode::ALL, false)
+            .expect("generate_models failed");
+        assert!(
+            output.contains("use logos::Logos;"),
+            "use logos::Logos; should appear in output when a pattern field is present:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_generate_models_excludes_logos_import_without_pattern() {
+        let models = vec![ModelType::Struct(make_model_without_pattern())];
+        let output = generate_models(&models, &[], &[], GenerateMode::ALL, false)
+            .expect("generate_models failed");
+        assert!(
+            !output.contains("use logos::Logos;"),
+            "use logos::Logos; should NOT appear when no pattern fields are present:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_generate_model_contains_regex_attr_for_pattern() {
+        let model = make_model_with_pattern_field();
+        let mut required_uses = RequiredUses::empty();
+        let mut needs_validator = false;
+        let mut needs_logos = false;
+        let output = generate_model(
+            &model,
+            &mut required_uses,
+            &mut needs_validator,
+            &mut needs_logos,
+            false,
+        )
+        .expect("generate_model failed");
+        assert!(
+            output.contains("#[regex("),
+            "#[regex(...)] attribute should be present in generated field:\n{output}"
         );
     }
 
