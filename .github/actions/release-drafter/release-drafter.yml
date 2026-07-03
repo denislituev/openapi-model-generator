@@ -1,0 +1,43 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+categories:
+  - title: '🚀 Features'
+    semver-increment: minor
+    when:
+      labels:
+      - 'feature'
+      - 'enhancement'
+  - title: '🐛 Bug Fixes'
+    semver-increment: patch
+    when:
+      labels:
+      - 'fix'
+      - 'bugfix'
+      - 'bug'
+  - title: '🧰 Maintenance'
+    semver-increment: patch
+    when:
+      labels:
+      - 'infrastructure'
+      - 'automation'
+      - 'documentation'
+      - 'code refinement'
+  - title: '🏎 Performance'
+    semver-increment: patch
+    when:
+      labels:
+        - 'performance'
+  - title: '🛡 Security'
+    semver-increment: patch
+    when:
+      labels:
+      - 'security'
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks.
+template: |
+  # Changelog ...
+  $CHANGES
+
+  Contributors: $CONTRIBUTORS
+  Repo owner: $OWNER
+  
