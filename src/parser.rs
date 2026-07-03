@@ -2369,4 +2369,385 @@ mod tests {
             panic!("Expected Widget to be a Struct");
         }
     }
+
+    // ─── to_pascal_case ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_to_pascal_case_lowercase() {
+        assert_eq!(to_pascal_case("user"), "User");
+    }
+
+    #[test]
+    fn test_to_pascal_case_camel_case() {
+        assert_eq!(to_pascal_case("createRole"), "CreateRole");
+    }
+
+    #[test]
+    fn test_to_pascal_case_with_hyphen() {
+        assert_eq!(to_pascal_case("list-roles"), "ListRoles");
+    }
+
+    #[test]
+    fn test_to_pascal_case_with_underscore() {
+        assert_eq!(to_pascal_case("list_roles"), "ListRoles");
+    }
+
+    #[test]
+    fn test_to_pascal_case_already_pascal() {
+        assert_eq!(to_pascal_case("PascalCase"), "PascalCase");
+    }
+
+    #[test]
+    fn test_to_pascal_case_empty_string() {
+        assert_eq!(to_pascal_case(""), "");
+    }
+
+    #[test]
+    fn test_to_pascal_case_mixed_delimiters() {
+        assert_eq!(to_pascal_case("listRoles-Input"), "ListRolesInput");
+    }
+
+    // ─── Additional schema parsing tests ─────────────────────────────────────
+
+    #[test]
+    fn test_parse_enum_string_schema() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Color": {
+                        "type": "string",
+                        "enum": ["red", "green", "blue"]
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+        let color = models.iter().find(|m| m.name() == "Color");
+        assert!(color.is_some(), "Expected Color enum");
+        match color.unwrap() {
+            ModelType::Enum(e) => {
+                assert_eq!(e.variants.len(), 3);
+                assert!(e.variants.contains(&"red".to_string()));
+                assert!(e.variants.contains(&"green".to_string()));
+                assert!(e.variants.contains(&"blue".to_string()));
+            }
+            _ => panic!("Expected Enum for Color"),
+        }
+    }
+
+    #[test]
+    fn test_parse_oneof_schema_produces_union() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Cat": { "type": "object", "properties": { "meow": { "type": "string" } } },
+                    "Dog": { "type": "object", "properties": { "bark": { "type": "string" } } },
+                    "Pet": {
+                        "oneOf": [
+                            { "$ref": "#/components/schemas/Cat" },
+                            { "$ref": "#/components/schemas/Dog" }
+                        ]
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+        let pet = models.iter().find(|m| m.name() == "Pet");
+        assert!(pet.is_some(), "Expected Pet union");
+        match pet.unwrap() {
+            ModelType::Union(u) => {
+                assert_eq!(u.variants.len(), 2);
+            }
+            _ => panic!("Expected Union for Pet"),
+        }
+    }
+
+    #[test]
+    fn test_parse_anyof_schema_produces_union() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Notification": {
+                        "anyOf": [
+                            { "type": "object", "properties": { "email": { "type": "string" } } },
+                            { "type": "object", "properties": { "sms": { "type": "string" } } }
+                        ]
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+        let notif = models.iter().find(|m| m.name() == "Notification");
+        assert!(notif.is_some(), "Expected Notification union");
+        match notif.unwrap() {
+            ModelType::Union(u) => {
+                use crate::models::UnionType;
+                assert!(matches!(u.union_type, UnionType::AnyOf));
+            }
+            _ => panic!("Expected Union (anyOf) for Notification"),
+        }
+    }
+
+    #[test]
+    fn test_parse_object_with_additional_properties_produces_type_alias() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Metadata": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+        let meta = models.iter().find(|m| m.name() == "Metadata");
+        assert!(meta.is_some(), "Expected Metadata model");
+        match meta.unwrap() {
+            ModelType::TypeAlias(alias) => {
+                assert!(alias.target_type.contains("HashMap<String, String>"));
+            }
+            _ => panic!("Expected TypeAlias for Metadata (additionalProperties only object)"),
+        }
+    }
+
+    #[test]
+    fn test_parse_array_schema_produces_type_alias() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "UserIds": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+        let user_ids = models.iter().find(|m| m.name() == "UserIds");
+        assert!(user_ids.is_some(), "Expected UserIds type alias");
+        match user_ids.unwrap() {
+            ModelType::TypeAlias(alias) => {
+                assert!(alias.target_type.contains("Vec<String>"));
+            }
+            _ => panic!("Expected TypeAlias for UserIds (array schema)"),
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_object_produces_empty_struct() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "EmptyModel": {
+                        "type": "object"
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+        let empty = models.iter().find(|m| m.name() == "EmptyModel");
+        assert!(empty.is_some(), "Expected EmptyModel");
+        match empty.unwrap() {
+            ModelType::Struct(s) => {
+                assert!(s.fields.is_empty(), "Empty object should produce struct with no fields");
+            }
+            _ => panic!("Expected Struct for EmptyModel"),
+        }
+    }
+
+    #[test]
+    fn test_parse_response_schema_from_path() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {
+                "/users/{id}": {
+                    "get": {
+                        "operationId": "getUser",
+                        "responses": {
+                            "200": {
+                                "description": "The user",
+                                "content": {
+                                    "application/json": {
+                                        "schema": { "$ref": "#/components/schemas/User" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "components": {
+                "schemas": {
+                    "User": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" },
+                            "name": { "type": "string" }
+                        },
+                        "required": ["id"]
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _requests, responses) = parse_openapi(&openapi_spec).expect("Failed to parse");
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].name, "GetUserResponse");
+        assert_eq!(responses[0].status_code, "200");
+
+        let user = models.iter().find(|m| m.name() == "User");
+        assert!(user.is_some(), "User model should be generated from components");
+    }
+
+    #[test]
+    fn test_parse_struct_with_description() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Order": {
+                        "type": "object",
+                        "description": "Represents a purchase order",
+                        "properties": {
+                            "id": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+        let order = models.iter().find(|m| m.name() == "Order");
+        assert!(order.is_some());
+        match order.unwrap() {
+            ModelType::Struct(s) => {
+                assert_eq!(s.description, Some("Represents a purchase order".to_string()));
+            }
+            _ => panic!("Expected Struct for Order"),
+        }
+    }
+
+    #[test]
+    fn test_parse_field_with_validation_rules() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Account": {
+                        "type": "object",
+                        "properties": {
+                            "username": {
+                                "type": "string",
+                                "minLength": 3,
+                                "maxLength": 30
+                            },
+                            "age": {
+                                "type": "integer",
+                                "minimum": 18,
+                                "maximum": 120
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+        let account = models.iter().find(|m| m.name() == "Account");
+        assert!(account.is_some(), "Expected Account model");
+        if let Some(ModelType::Struct(s)) = account {
+            let username = s.fields.iter().find(|f| f.name == "username").unwrap();
+            assert!(username.validation_rules.is_some());
+            let rules = username.validation_rules.as_ref().unwrap();
+            assert_eq!(rules.min_length, Some(3));
+            assert_eq!(rules.max_length, Some(30));
+
+            let age = s.fields.iter().find(|f| f.name == "age").unwrap();
+            assert!(age.validation_rules.is_some());
+            let rules = age.validation_rules.as_ref().unwrap();
+            assert_eq!(rules.minimum, Some(18.0));
+            assert_eq!(rules.maximum, Some(120.0));
+        } else {
+            panic!("Expected Struct for Account");
+        }
+    }
+
+    #[test]
+    fn test_parse_array_items_with_oneof_produces_union_and_alias() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test", "version": "1.0.0" },
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Events": {
+                        "type": "array",
+                        "items": {
+                            "oneOf": [
+                                { "type": "object", "properties": { "click": { "type": "string" } } },
+                                { "type": "object", "properties": { "scroll": { "type": "string" } } }
+                            ]
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to parse spec");
+
+        let (models, _, _) = parse_openapi(&openapi_spec).expect("Failed to parse");
+
+        // Should generate both EventsItem (union) and Events (type alias Vec<EventsItem>)
+        let events = models.iter().find(|m| m.name() == "Events");
+        assert!(events.is_some(), "Expected Events type alias");
+        match events.unwrap() {
+            ModelType::TypeAlias(alias) => {
+                assert!(alias.target_type.contains("Vec<EventsItem>"));
+            }
+            _ => panic!("Expected TypeAlias for Events"),
+        }
+
+        let events_item = models.iter().find(|m| m.name() == "EventsItem");
+        assert!(events_item.is_some(), "Expected EventsItem union");
+        assert!(matches!(events_item.unwrap(), ModelType::Union(_)));
+    }
 }

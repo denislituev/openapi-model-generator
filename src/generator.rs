@@ -835,4 +835,742 @@ mod tests {
             "Display impl should be skipped when x-rust-attrs already has Display:\n{output}"
         );
     }
+
+    // ─── to_snake_case ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_to_snake_case_camel_case() {
+        assert_eq!(to_snake_case("camelCase"), "camel_case");
+        assert_eq!(to_snake_case("myFieldName"), "my_field_name");
+    }
+
+    #[test]
+    fn test_to_snake_case_pascal_case() {
+        assert_eq!(to_snake_case("PascalCase"), "pascal_case");
+        assert_eq!(to_snake_case("MyModel"), "my_model");
+    }
+
+    #[test]
+    fn test_to_snake_case_already_snake() {
+        assert_eq!(to_snake_case("snake_case"), "snake_case");
+    }
+
+    #[test]
+    fn test_to_snake_case_self_reserved() {
+        // "Self" -> "self" which is a keyword → appended with '_'
+        assert_eq!(to_snake_case("Self"), "self_");
+    }
+
+    #[test]
+    fn test_to_snake_case_digit_start() {
+        // A leading digit must be prefixed with '_'
+        assert_eq!(to_snake_case("123field"), "_123field");
+    }
+
+    #[test]
+    fn test_to_snake_case_special_chars_become_underscore() {
+        assert_eq!(to_snake_case("field-name"), "field_name");
+        assert_eq!(to_snake_case("field.name"), "field_name");
+    }
+
+    #[test]
+    fn test_to_snake_case_collapses_double_underscore() {
+        // Special chars produce underscores; consecutive underscores are collapsed
+        assert_eq!(to_snake_case("field__name"), "field_name");
+    }
+
+    // ─── is_reserved_word ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_reserved_word_fn_keyword() {
+        assert!(is_reserved_word("fn"));
+        assert!(is_reserved_word("type"));
+        assert!(is_reserved_word("struct"));
+        assert!(is_reserved_word("while"));
+        // raw identifier prefix "r#" is not stripped, so "r#fn" does NOT match
+        assert!(!is_reserved_word("r#fn"));
+    }
+
+    #[test]
+    fn test_is_reserved_word_not_keyword() {
+        assert!(!is_reserved_word("name"));
+        assert!(!is_reserved_word("id"));
+        assert!(!is_reserved_word("value"));
+    }
+
+    // ─── has_custom_derive / has_custom_serde ────────────────────────────────
+
+    #[test]
+    fn test_has_custom_derive_true() {
+        let attrs = Some(vec!["#[derive(Hash)]".to_string()]);
+        assert!(has_custom_derive(&attrs));
+    }
+
+    #[test]
+    fn test_has_custom_derive_false_other_attr() {
+        let attrs = Some(vec!["#[serde(rename_all = \"camelCase\")]".to_string()]);
+        assert!(!has_custom_derive(&attrs));
+    }
+
+    #[test]
+    fn test_has_custom_derive_none() {
+        assert!(!has_custom_derive(&None));
+    }
+
+    #[test]
+    fn test_has_custom_serde_true() {
+        let attrs = Some(vec!["#[serde(rename_all = \"camelCase\")]".to_string()]);
+        assert!(has_custom_serde(&attrs));
+    }
+
+    #[test]
+    fn test_has_custom_serde_false() {
+        let attrs = Some(vec!["#[derive(Hash)]".to_string()]);
+        assert!(!has_custom_serde(&attrs));
+    }
+
+    // ─── generate_custom_attrs ───────────────────────────────────────────────
+
+    #[test]
+    fn test_generate_custom_attrs_some() {
+        let attrs = Some(vec!["#[derive(Hash)]".to_string(), "#[serde(rename_all = \"camelCase\")]".to_string()]);
+        let out = generate_custom_attrs(&attrs);
+        assert!(out.contains("#[derive(Hash)]\n"));
+        assert!(out.contains("#[serde(rename_all = \"camelCase\")]\n"));
+    }
+
+    #[test]
+    fn test_generate_custom_attrs_none() {
+        assert_eq!(generate_custom_attrs(&None), "");
+    }
+
+    // ─── generate_description_docs ───────────────────────────────────────────
+
+    #[test]
+    fn test_generate_description_docs_with_description() {
+        let desc = Some("A description.\nSecond line.".to_string());
+        let out = generate_description_docs(&desc, "Fallback", "");
+        assert!(out.contains("/// A description."));
+        assert!(out.contains("/// Second line."));
+        assert!(!out.contains("Fallback"));
+    }
+
+    #[test]
+    fn test_generate_description_docs_uses_fallback() {
+        let out = generate_description_docs(&None, "FallbackName", "");
+        assert!(out.contains("/// FallbackName"));
+    }
+
+    #[test]
+    fn test_generate_description_docs_empty_fallback_produces_empty() {
+        let out = generate_description_docs(&None, "", "");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_generate_description_docs_with_indent() {
+        let desc = Some("My field".to_string());
+        let out = generate_description_docs(&desc, "", "    ");
+        assert!(out.starts_with("    /// My field"));
+    }
+
+    // ─── generate_display_impl ───────────────────────────────────────────────
+
+    #[test]
+    fn test_generate_display_impl_skipped_when_display_in_custom_attrs() {
+        let attrs = Some(vec!["#[derive(Display, Debug)]".to_string()]);
+        let out = generate_display_impl("MyType", &attrs, "        write!(f, \"{:?}\", self)\n");
+        assert!(out.is_empty(), "Should be empty when Display attr is present");
+    }
+
+    #[test]
+    fn test_generate_display_impl_generated_when_no_custom_attrs() {
+        let out = generate_display_impl("MyType", &None, "        write!(f, \"{:?}\", self)\n");
+        assert!(out.contains("impl std::fmt::Display for MyType"));
+        assert!(out.contains("write!(f, \"{:?}\", self)"));
+    }
+
+    // ─── generate_validator_attrs ────────────────────────────────────────────
+
+    #[test]
+    fn test_generate_validator_attrs_string_min_max_length() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            min_length: Some(1),
+            max_length: Some(100),
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "String");
+        assert!(out.contains("#[validate(length("));
+        assert!(out.contains("min = 1"));
+        assert!(out.contains("max = 100"));
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_string_email() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            email: true,
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "String");
+        assert!(out.contains("#[validate(email)]\n"));
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_string_url() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            url: true,
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "Option<String>");
+        assert!(out.contains("#[validate(url)]\n"));
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_string_pattern() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            pattern: Some(r"^\d+$".to_string()),
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "String");
+        assert!(out.contains("#[regex(pattern = r\""));
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_number_range() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            minimum: Some(0.0),
+            maximum: Some(255.0),
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "i64");
+        assert!(out.contains("#[validate(range("));
+        assert!(out.contains("min = 0"));
+        assert!(out.contains("max = 255"));
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_array_items() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            min_items: Some(1),
+            max_items: Some(10),
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "Vec<String>");
+        assert!(out.contains("#[validate(length("));
+        assert!(out.contains("min = 1"));
+        assert!(out.contains("max = 10"));
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_unknown_type_returns_empty() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            minimum: Some(1.0),
+            ..Default::default()
+        };
+        // Custom type that doesn't match any arm → no output
+        let out = generate_validator_attrs(&rules, "MyCustomType");
+        assert!(out.is_empty());
+    }
+
+    // ─── generate_model ──────────────────────────────────────────────────────
+
+    fn make_field(name: &str, field_type: &str, is_required: bool) -> crate::models::Field {
+        crate::models::Field {
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            format: "string".to_string(),
+            is_required,
+            is_nullable: false,
+            is_array_ref: false,
+            description: None,
+            custom_attrs: None,
+            validation_rules: None,
+        }
+    }
+
+    fn make_model(name: &str, fields: Vec<crate::models::Field>) -> crate::models::Model {
+        crate::models::Model {
+            name: name.to_string(),
+            fields,
+            custom_attrs: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn test_generate_model_basic_struct() {
+        let model = make_model("User", vec![
+            make_field("id", "String", true),
+            make_field("age", "i64", false),
+        ]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(out.contains("pub struct User {"));
+        assert!(out.contains("pub id: String,"));
+        assert!(out.contains("pub age: Option<i64>,"));
+        assert!(out.contains("#[derive(Debug, Clone, Serialize, Deserialize)]"));
+        assert!(!out.contains("impl std::fmt::Display"));
+    }
+
+    #[test]
+    fn test_generate_model_with_display() {
+        let model = make_model("Product", vec![make_field("name", "String", true)]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, true).expect("generate_model failed");
+        assert!(out.contains("impl std::fmt::Display for Product"));
+        assert!(out.contains("write!(f, \"{:?}\", self)"));
+    }
+
+    #[test]
+    fn test_generate_model_datetime_field_sets_import_flag() {
+        let model = make_model("Event", vec![make_field("created_at", "DateTime<Utc>", true)]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let _ = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(ru.contains(RequiredUses::DATETIME), "DATETIME flag should be set");
+    }
+
+    #[test]
+    fn test_generate_model_date_field_sets_import_flag() {
+        let model = make_model("Record", vec![make_field("birth_date", "Date", true)]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let _ = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(ru.contains(RequiredUses::DATE), "DATE flag should be set");
+    }
+
+    #[test]
+    fn test_generate_model_uuid_field_sets_import_flag() {
+        let model = make_model("Entity", vec![make_field("id", "Uuid", true)]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(ru.contains(RequiredUses::UUID), "UUID flag should be set");
+        assert!(out.contains("pub id: Uuid,"));
+    }
+
+    #[test]
+    fn test_generate_model_reserved_field_name_gets_raw_prefix() {
+        // "type" is a reserved word → r#type
+        let model = make_model("Signal", vec![make_field("type", "String", true)]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(out.contains("r#type"));
+        assert!(out.contains("#[serde(rename = \"type\")]"));
+    }
+
+    #[test]
+    fn test_generate_model_serde_rename_when_name_differs() {
+        // camelCase field name gets snake_case rename
+        let model = make_model("Obj", vec![make_field("myFieldName", "String", true)]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(out.contains("pub my_field_name: String,"));
+        assert!(out.contains("#[serde(rename = \"myFieldName\")]"));
+    }
+
+    #[test]
+    fn test_generate_model_flatten_additional_properties() {
+        let mut field = make_field("additional_properties", "std::collections::HashMap<String, serde_json::Value>", false);
+        field.is_required = true;
+        let model = make_model("Extensible", vec![field]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(out.contains("#[serde(flatten)]"));
+    }
+
+    #[test]
+    fn test_generate_model_nullable_field_becomes_option() {
+        let mut field = make_field("label", "String", true);
+        field.is_nullable = true;
+        let model = make_model("Widget", vec![field]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(out.contains("pub label: Option<String>,"));
+    }
+
+    #[test]
+    fn test_generate_model_array_ref_field() {
+        let mut field = make_field("items", "String", true);
+        field.is_array_ref = true;
+        let model = make_model("Collection", vec![field]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        assert!(out.contains("pub items: Vec<String>,"));
+    }
+
+    #[test]
+    fn test_generate_model_custom_derive_not_doubled() {
+        let mut model = make_model("Custom", vec![make_field("x", "i64", true)]);
+        model.custom_attrs = Some(vec!["#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize)]".to_string()]);
+        let mut ru = RequiredUses::empty();
+        let mut nv = false;
+        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        // Default derive must NOT be added when custom derive is already present
+        let derive_count = out.matches("#[derive(").count();
+        assert_eq!(derive_count, 1, "Only one derive block expected:\n{out}");
+    }
+
+    // ─── generate_composition ────────────────────────────────────────────────
+
+    #[test]
+    fn test_generate_composition_basic() {
+        use crate::models::CompositionModel;
+        let comp = CompositionModel {
+            name: "PersonComposed".to_string(),
+            all_fields: vec![
+                make_field("name", "String", true),
+                make_field("age", "i64", false),
+            ],
+            custom_attrs: None,
+        };
+        let mut ru = RequiredUses::empty();
+        let out = generate_composition(&comp, &mut ru, false).expect("generate_composition failed");
+        assert!(out.contains("pub struct PersonComposed {"));
+        assert!(out.contains("pub name: String,"));
+        assert!(out.contains("pub age: Option<i64>,"));
+        assert!(out.contains("/// PersonComposed (allOf composition)"));
+    }
+
+    #[test]
+    fn test_generate_composition_with_display() {
+        use crate::models::CompositionModel;
+        let comp = CompositionModel {
+            name: "Base".to_string(),
+            all_fields: vec![make_field("id", "String", true)],
+            custom_attrs: None,
+        };
+        let mut ru = RequiredUses::empty();
+        let out = generate_composition(&comp, &mut ru, true).expect("generate_composition failed");
+        assert!(out.contains("impl std::fmt::Display for Base"));
+    }
+
+    // ─── generate_union ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_generate_union_oneof() {
+        use crate::models::{UnionModel, UnionType, UnionVariant};
+        let union = UnionModel {
+            name: "MyUnion".to_string(),
+            variants: vec![
+                UnionVariant { name: "VariantA".to_string(), fields: vec![], primitive_type: None },
+                UnionVariant { name: "VariantB".to_string(), fields: vec![], primitive_type: None },
+            ],
+            union_type: UnionType::OneOf,
+            custom_attrs: None,
+        };
+        let out = generate_union(&union, false).expect("generate_union failed");
+        assert!(out.contains("/// MyUnion (oneOf)"));
+        assert!(out.contains("pub enum MyUnion {"));
+        assert!(out.contains("VariantA(VariantA),"));
+        assert!(out.contains("VariantB(VariantB),"));
+        assert!(out.contains("#[serde(untagged)]"));
+    }
+
+    #[test]
+    fn test_generate_union_anyof() {
+        use crate::models::{UnionModel, UnionType, UnionVariant};
+        let union = UnionModel {
+            name: "AnyOfUnion".to_string(),
+            variants: vec![
+                UnionVariant { name: "Opt1".to_string(), fields: vec![], primitive_type: None },
+            ],
+            union_type: UnionType::AnyOf,
+            custom_attrs: None,
+        };
+        let out = generate_union(&union, false).expect("generate_union failed");
+        assert!(out.contains("/// AnyOfUnion (anyOf)"));
+    }
+
+    #[test]
+    fn test_generate_union_with_display() {
+        use crate::models::{UnionModel, UnionType, UnionVariant};
+        let union = UnionModel {
+            name: "PaymentMethod".to_string(),
+            variants: vec![
+                UnionVariant { name: "Card".to_string(), fields: vec![], primitive_type: None },
+                UnionVariant { name: "Cash".to_string(), fields: vec![], primitive_type: None },
+            ],
+            union_type: UnionType::OneOf,
+            custom_attrs: None,
+        };
+        let out = generate_union(&union, true).expect("generate_union failed");
+        assert!(out.contains("impl std::fmt::Display for PaymentMethod"));
+        assert!(out.contains("Self::Card(inner) => write!(f, \"{}\", inner)"));
+    }
+
+    #[test]
+    fn test_generate_union_with_primitive_type() {
+        use crate::models::{UnionModel, UnionType, UnionVariant};
+        let union = UnionModel {
+            name: "StringOrInt".to_string(),
+            variants: vec![
+                UnionVariant { name: "StringVariant".to_string(), fields: vec![], primitive_type: Some("String".to_string()) },
+                UnionVariant { name: "IntVariant".to_string(), fields: vec![], primitive_type: Some("i64".to_string()) },
+            ],
+            union_type: UnionType::OneOf,
+            custom_attrs: None,
+        };
+        let out = generate_union(&union, false).expect("generate_union failed");
+        assert!(out.contains("StringVariant(String),"));
+        assert!(out.contains("IntVariant(i64),"));
+    }
+
+    // ─── generate_type_alias ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_generate_type_alias_basic() {
+        use crate::models::TypeAliasModel;
+        let alias = TypeAliasModel {
+            name: "UserId".to_string(),
+            target_type: "uuid::Uuid".to_string(),
+            description: None,
+            custom_attrs: None,
+        };
+        let out = generate_type_alias(&alias).expect("generate_type_alias failed");
+        assert!(out.contains("pub type UserId = uuid::Uuid;"));
+    }
+
+    #[test]
+    fn test_generate_type_alias_with_description() {
+        use crate::models::TypeAliasModel;
+        let alias = TypeAliasModel {
+            name: "Tags".to_string(),
+            target_type: "Vec<String>".to_string(),
+            description: Some("A list of tags".to_string()),
+            custom_attrs: None,
+        };
+        let out = generate_type_alias(&alias).expect("generate_type_alias failed");
+        assert!(out.contains("/// A list of tags"));
+        assert!(out.contains("pub type Tags = Vec<String>;"));
+    }
+
+    // ─── generate_request_model / generate_response_model ───────────────────
+
+    #[test]
+    fn test_generate_request_model_basic() {
+        use crate::models::RequestModel;
+        let req = RequestModel {
+            name: "CreateUserRequest".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "CreateUserRequestBody".to_string(),
+            is_required: true,
+        };
+        let out = generate_request_model(&req).expect("generate_request_model failed");
+        assert!(out.contains("pub struct CreateUserRequest {"));
+        assert!(out.contains("pub body: CreateUserRequestBody,"));
+    }
+
+    #[test]
+    fn test_generate_request_model_empty_name_skipped() {
+        use crate::models::RequestModel;
+        let req = RequestModel {
+            name: "".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "SomeSchema".to_string(),
+            is_required: false,
+        };
+        let out = generate_request_model(&req).expect("generate_request_model failed");
+        assert!(out.is_empty(), "Empty-named request should produce no code");
+    }
+
+    #[test]
+    fn test_generate_request_model_unknown_name_skipped() {
+        use crate::models::RequestModel;
+        let req = RequestModel {
+            name: EMPTY_REQUEST_NAME.to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Schema".to_string(),
+            is_required: false,
+        };
+        let out = generate_request_model(&req).expect("generate_request_model failed");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_generate_response_model_basic() {
+        use crate::models::ResponseModel;
+        let resp = ResponseModel {
+            name: "GetUserResponse".to_string(),
+            status_code: "200".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "User".to_string(),
+            description: Some("Successful response".to_string()),
+        };
+        let out = generate_response_model(&resp).expect("generate_response_model failed");
+        assert!(out.contains("pub struct GetUserResponse200 {"));
+        assert!(out.contains("pub body: User,"));
+        assert!(out.contains("/// Successful response"));
+    }
+
+    #[test]
+    fn test_generate_response_model_unknown_name_skipped() {
+        use crate::models::ResponseModel;
+        let resp = ResponseModel {
+            name: EMPTY_RESPONSE_NAME.to_string(),
+            status_code: "200".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "User".to_string(),
+            description: None,
+        };
+        let out = generate_response_model(&resp).expect("generate_response_model failed");
+        assert!(out.is_empty());
+    }
+
+    // ─── generate_models (public API) ────────────────────────────────────────
+
+    #[test]
+    fn test_generate_models_always_includes_serde_import() {
+        let out = generate_models(&[], &[], &[], GenerateMode::MODELS, false)
+            .expect("generate_models failed");
+        assert!(out.contains("use serde::{Serialize, Deserialize};"));
+    }
+
+    #[test]
+    fn test_generate_models_models_only_mode_skips_requests_and_responses() {
+        use crate::models::{RequestModel, ResponseModel};
+        let requests = vec![RequestModel {
+            name: "CreateFooRequest".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Foo".to_string(),
+            is_required: true,
+        }];
+        let responses = vec![ResponseModel {
+            name: "GetFooResponse".to_string(),
+            status_code: "200".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Foo".to_string(),
+            description: None,
+        }];
+        let out = generate_models(&[], &requests, &responses, GenerateMode::MODELS, false)
+            .expect("generate_models failed");
+        assert!(!out.contains("CreateFooRequest"), "MODELS mode must not emit request types");
+        assert!(!out.contains("GetFooResponse200"), "MODELS mode must not emit response types");
+    }
+
+    #[test]
+    fn test_generate_models_all_mode_includes_requests_and_responses() {
+        use crate::models::{RequestModel, ResponseModel};
+        let requests = vec![RequestModel {
+            name: "CreateFooRequest".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Foo".to_string(),
+            is_required: true,
+        }];
+        let responses = vec![ResponseModel {
+            name: "GetFooResponse".to_string(),
+            status_code: "200".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Foo".to_string(),
+            description: None,
+        }];
+        let out = generate_models(&[], &requests, &responses, GenerateMode::ALL, false)
+            .expect("generate_models failed");
+        assert!(out.contains("CreateFooRequest"));
+        assert!(out.contains("GetFooResponse200"));
+    }
+
+    #[test]
+    fn test_generate_models_requests_mode_includes_only_requests() {
+        use crate::models::{RequestModel, ResponseModel};
+        let requests = vec![RequestModel {
+            name: "CreateFooRequest".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Foo".to_string(),
+            is_required: true,
+        }];
+        let responses = vec![ResponseModel {
+            name: "GetFooResponse".to_string(),
+            status_code: "200".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Foo".to_string(),
+            description: None,
+        }];
+        let out = generate_models(&[], &requests, &responses, GenerateMode::REQUESTS, false)
+            .expect("generate_models failed");
+        assert!(out.contains("CreateFooRequest"), "REQUESTS mode should emit requests");
+        assert!(!out.contains("GetFooResponse200"), "REQUESTS mode should not emit responses");
+    }
+
+    #[test]
+    fn test_generate_models_responses_mode_includes_only_responses() {
+        use crate::models::{RequestModel, ResponseModel};
+        let requests = vec![RequestModel {
+            name: "CreateFooRequest".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Foo".to_string(),
+            is_required: true,
+        }];
+        let responses = vec![ResponseModel {
+            name: "GetFooResponse".to_string(),
+            status_code: "200".to_string(),
+            content_type: "application/json".to_string(),
+            schema: "Foo".to_string(),
+            description: None,
+        }];
+        let out = generate_models(&[], &requests, &responses, GenerateMode::RESPONSES, false)
+            .expect("generate_models failed");
+        assert!(!out.contains("CreateFooRequest"), "RESPONSES mode should not emit requests");
+        assert!(out.contains("GetFooResponse200"), "RESPONSES mode should emit responses");
+    }
+
+    #[test]
+    fn test_generate_models_adds_chrono_import_for_datetime_field() {
+        let models = vec![ModelType::Struct(make_model(
+            "Event",
+            vec![make_field("created_at", "DateTime<Utc>", true)],
+        ))];
+        let out = generate_models(&models, &[], &[], GenerateMode::MODELS, false)
+            .expect("generate_models failed");
+        assert!(out.contains("use chrono::{"));
+        assert!(out.contains("DateTime"));
+        assert!(out.contains("Utc"));
+    }
+
+    #[test]
+    fn test_generate_models_adds_uuid_import_for_uuid_field() {
+        let models = vec![ModelType::Struct(make_model(
+            "Entity",
+            vec![make_field("id", "Uuid", true)],
+        ))];
+        let out = generate_models(&models, &[], &[], GenerateMode::MODELS, false)
+            .expect("generate_models failed");
+        assert!(out.contains("use uuid::Uuid;"));
+    }
+
+    #[test]
+    fn test_generate_models_adds_validator_import_when_validation_rules_present() {
+        use crate::models::ValidationRules;
+        let mut field = make_field("name", "String", true);
+        field.validation_rules = Some(ValidationRules {
+            min_length: Some(1),
+            max_length: Some(50),
+            ..Default::default()
+        });
+        let models = vec![ModelType::Struct(make_model("Validated", vec![field]))];
+        let out = generate_models(&models, &[], &[], GenerateMode::MODELS, false)
+            .expect("generate_models failed");
+        assert!(out.contains("use validator::Validate;"));
+        assert!(out.contains("Validate"));
+    }
+
+    #[test]
+    fn test_generate_lib() {
+        let out = generate_lib().expect("generate_lib failed");
+        assert!(out.contains("pub mod models;"));
+    }
 }
