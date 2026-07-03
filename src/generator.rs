@@ -264,6 +264,16 @@ pub fn generate_models(
     Ok(output)
 }
 
+/// Format f64 as a Rust float literal, ensuring `0` becomes `0.0`.
+fn format_f64_literal(v: f64) -> String {
+    let s = v.to_string();
+    if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") {
+        s
+    } else {
+        format!("{v}.0")
+    }
+}
+
 /// Generate validator attributes based on validation rules
 fn generate_validator_attrs(rules: &crate::models::ValidationRules, field_type: &str) -> String {
     let mut attrs = String::new();
@@ -296,15 +306,33 @@ fn generate_validator_attrs(rules: &crate::models::ValidationRules, field_type: 
                 attrs.push_str(&format!("    #[regex(pattern = r\"{}\")]\n", pattern));
             }
         }
-        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
-        | "Option<i8>" | "Option<i16>" | "Option<i32>" | "Option<i64>" | "Option<u8>"
-        | "Option<u16>" | "Option<u32>" | "Option<u64>" | "Option<f32>" | "Option<f64>" => {
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "Option<i8>"
+        | "Option<i16>" | "Option<i32>" | "Option<i64>" | "Option<u8>" | "Option<u16>"
+        | "Option<u32>" | "Option<u64>" => {
             let mut range_attrs = Vec::new();
             if let Some(min) = rules.minimum {
-                range_attrs.push(format!("min = {}", min));
+                range_attrs.push(format!("min = {}", min as i64));
             }
             if let Some(max) = rules.maximum {
-                range_attrs.push(format!("max = {}", max));
+                range_attrs.push(format!("max = {}", max as i64));
+            }
+            if rules.exclusive_minimum || rules.exclusive_maximum {
+                range_attrs.push("exclusive = true".to_string());
+            }
+            if !range_attrs.is_empty() {
+                attrs.push_str(&format!(
+                    "    #[validate(range({}))]\n",
+                    range_attrs.join(", ")
+                ));
+            }
+        }
+        "f32" | "f64" | "Option<f32>" | "Option<f64>" => {
+            let mut range_attrs = Vec::new();
+            if let Some(min) = rules.minimum {
+                range_attrs.push(format!("min = {}", format_f64_literal(min)));
+            }
+            if let Some(max) = rules.maximum {
+                range_attrs.push(format!("max = {}", format_f64_literal(max)));
             }
             if rules.exclusive_minimum || rules.exclusive_maximum {
                 range_attrs.push("exclusive = true".to_string());
@@ -933,7 +961,10 @@ mod tests {
 
     #[test]
     fn test_generate_custom_attrs_some() {
-        let attrs = Some(vec!["#[derive(Hash)]".to_string(), "#[serde(rename_all = \"camelCase\")]".to_string()]);
+        let attrs = Some(vec![
+            "#[derive(Hash)]".to_string(),
+            "#[serde(rename_all = \"camelCase\")]".to_string(),
+        ]);
         let out = generate_custom_attrs(&attrs);
         assert!(out.contains("#[derive(Hash)]\n"));
         assert!(out.contains("#[serde(rename_all = \"camelCase\")]\n"));
@@ -980,7 +1011,10 @@ mod tests {
     fn test_generate_display_impl_skipped_when_display_in_custom_attrs() {
         let attrs = Some(vec!["#[derive(Display, Debug)]".to_string()]);
         let out = generate_display_impl("MyType", &attrs, "        write!(f, \"{:?}\", self)\n");
-        assert!(out.is_empty(), "Should be empty when Display attr is present");
+        assert!(
+            out.is_empty(),
+            "Should be empty when Display attr is present"
+        );
     }
 
     #[test]
@@ -1106,10 +1140,13 @@ mod tests {
 
     #[test]
     fn test_generate_model_basic_struct() {
-        let model = make_model("User", vec![
-            make_field("id", "String", true),
-            make_field("age", "i64", false),
-        ]);
+        let model = make_model(
+            "User",
+            vec![
+                make_field("id", "String", true),
+                make_field("age", "i64", false),
+            ],
+        );
         let mut ru = RequiredUses::empty();
         let mut nv = false;
         let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
@@ -1132,11 +1169,17 @@ mod tests {
 
     #[test]
     fn test_generate_model_datetime_field_sets_import_flag() {
-        let model = make_model("Event", vec![make_field("created_at", "DateTime<Utc>", true)]);
+        let model = make_model(
+            "Event",
+            vec![make_field("created_at", "DateTime<Utc>", true)],
+        );
         let mut ru = RequiredUses::empty();
         let mut nv = false;
         let _ = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
-        assert!(ru.contains(RequiredUses::DATETIME), "DATETIME flag should be set");
+        assert!(
+            ru.contains(RequiredUses::DATETIME),
+            "DATETIME flag should be set"
+        );
     }
 
     #[test]
@@ -1182,7 +1225,11 @@ mod tests {
 
     #[test]
     fn test_generate_model_flatten_additional_properties() {
-        let mut field = make_field("additional_properties", "std::collections::HashMap<String, serde_json::Value>", false);
+        let mut field = make_field(
+            "additional_properties",
+            "std::collections::HashMap<String, serde_json::Value>",
+            false,
+        );
         field.is_required = true;
         let model = make_model("Extensible", vec![field]);
         let mut ru = RequiredUses::empty();
@@ -1216,7 +1263,9 @@ mod tests {
     #[test]
     fn test_generate_model_custom_derive_not_doubled() {
         let mut model = make_model("Custom", vec![make_field("x", "i64", true)]);
-        model.custom_attrs = Some(vec!["#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize)]".to_string()]);
+        model.custom_attrs = Some(vec![
+            "#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize)]".to_string(),
+        ]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
         let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
@@ -1267,8 +1316,16 @@ mod tests {
         let union = UnionModel {
             name: "MyUnion".to_string(),
             variants: vec![
-                UnionVariant { name: "VariantA".to_string(), fields: vec![], primitive_type: None },
-                UnionVariant { name: "VariantB".to_string(), fields: vec![], primitive_type: None },
+                UnionVariant {
+                    name: "VariantA".to_string(),
+                    fields: vec![],
+                    primitive_type: None,
+                },
+                UnionVariant {
+                    name: "VariantB".to_string(),
+                    fields: vec![],
+                    primitive_type: None,
+                },
             ],
             union_type: UnionType::OneOf,
             custom_attrs: None,
@@ -1286,9 +1343,11 @@ mod tests {
         use crate::models::{UnionModel, UnionType, UnionVariant};
         let union = UnionModel {
             name: "AnyOfUnion".to_string(),
-            variants: vec![
-                UnionVariant { name: "Opt1".to_string(), fields: vec![], primitive_type: None },
-            ],
+            variants: vec![UnionVariant {
+                name: "Opt1".to_string(),
+                fields: vec![],
+                primitive_type: None,
+            }],
             union_type: UnionType::AnyOf,
             custom_attrs: None,
         };
@@ -1302,8 +1361,16 @@ mod tests {
         let union = UnionModel {
             name: "PaymentMethod".to_string(),
             variants: vec![
-                UnionVariant { name: "Card".to_string(), fields: vec![], primitive_type: None },
-                UnionVariant { name: "Cash".to_string(), fields: vec![], primitive_type: None },
+                UnionVariant {
+                    name: "Card".to_string(),
+                    fields: vec![],
+                    primitive_type: None,
+                },
+                UnionVariant {
+                    name: "Cash".to_string(),
+                    fields: vec![],
+                    primitive_type: None,
+                },
             ],
             union_type: UnionType::OneOf,
             custom_attrs: None,
@@ -1319,8 +1386,16 @@ mod tests {
         let union = UnionModel {
             name: "StringOrInt".to_string(),
             variants: vec![
-                UnionVariant { name: "StringVariant".to_string(), fields: vec![], primitive_type: Some("String".to_string()) },
-                UnionVariant { name: "IntVariant".to_string(), fields: vec![], primitive_type: Some("i64".to_string()) },
+                UnionVariant {
+                    name: "StringVariant".to_string(),
+                    fields: vec![],
+                    primitive_type: Some("String".to_string()),
+                },
+                UnionVariant {
+                    name: "IntVariant".to_string(),
+                    fields: vec![],
+                    primitive_type: Some("i64".to_string()),
+                },
             ],
             union_type: UnionType::OneOf,
             custom_attrs: None,
@@ -1458,8 +1533,14 @@ mod tests {
         }];
         let out = generate_models(&[], &requests, &responses, GenerateMode::MODELS, false)
             .expect("generate_models failed");
-        assert!(!out.contains("CreateFooRequest"), "MODELS mode must not emit request types");
-        assert!(!out.contains("GetFooResponse200"), "MODELS mode must not emit response types");
+        assert!(
+            !out.contains("CreateFooRequest"),
+            "MODELS mode must not emit request types"
+        );
+        assert!(
+            !out.contains("GetFooResponse200"),
+            "MODELS mode must not emit response types"
+        );
     }
 
     #[test]
@@ -1502,8 +1583,14 @@ mod tests {
         }];
         let out = generate_models(&[], &requests, &responses, GenerateMode::REQUESTS, false)
             .expect("generate_models failed");
-        assert!(out.contains("CreateFooRequest"), "REQUESTS mode should emit requests");
-        assert!(!out.contains("GetFooResponse200"), "REQUESTS mode should not emit responses");
+        assert!(
+            out.contains("CreateFooRequest"),
+            "REQUESTS mode should emit requests"
+        );
+        assert!(
+            !out.contains("GetFooResponse200"),
+            "REQUESTS mode should not emit responses"
+        );
     }
 
     #[test]
@@ -1524,8 +1611,14 @@ mod tests {
         }];
         let out = generate_models(&[], &requests, &responses, GenerateMode::RESPONSES, false)
             .expect("generate_models failed");
-        assert!(!out.contains("CreateFooRequest"), "RESPONSES mode should not emit requests");
-        assert!(out.contains("GetFooResponse200"), "RESPONSES mode should emit responses");
+        assert!(
+            !out.contains("CreateFooRequest"),
+            "RESPONSES mode should not emit requests"
+        );
+        assert!(
+            out.contains("GetFooResponse200"),
+            "RESPONSES mode should emit responses"
+        );
     }
 
     #[test]
@@ -1572,5 +1665,54 @@ mod tests {
     fn test_generate_lib() {
         let out = generate_lib().expect("generate_lib failed");
         assert!(out.contains("pub mod models;"));
+    }
+
+    #[test]
+    fn test_float_range_uses_float_literals() {
+        // Regression test for issue #66: f64 fields must get float literals
+        // (e.g. `min = 0.0`) so the `Validate` derive infers f64, not i32.
+        let rules = crate::models::ValidationRules {
+            minimum: Some(0.0),
+            maximum: Some(100.0),
+            ..Default::default()
+        };
+
+        // Non-optional f64
+        let attrs = generate_validator_attrs(&rules, "f64");
+        assert!(
+            attrs.contains("min = 0.0"),
+            "f64 min should be a float literal:\n{attrs}"
+        );
+        assert!(
+            attrs.contains("max = 100.0"),
+            "f64 max should be a float literal:\n{attrs}"
+        );
+
+        // Optional f64
+        let attrs = generate_validator_attrs(&rules, "Option<f64>");
+        assert!(
+            attrs.contains("min = 0.0") && attrs.contains("max = 100.0"),
+            "Option<f64> range should use float literals:\n{attrs}"
+        );
+    }
+
+    #[test]
+    fn test_integer_range_uses_integer_literals() {
+        // Integer fields should keep integer literals (no `.0`).
+        let rules = crate::models::ValidationRules {
+            minimum: Some(0.0),
+            maximum: Some(100.0),
+            ..Default::default()
+        };
+
+        let attrs = generate_validator_attrs(&rules, "i64");
+        assert!(
+            attrs.contains("min = 0") && !attrs.contains("min = 0.0"),
+            "i64 min should be an integer literal:\n{attrs}"
+        );
+        assert!(
+            attrs.contains("max = 100") && !attrs.contains("max = 100.0"),
+            "i64 max should be an integer literal:\n{attrs}"
+        );
     }
 }

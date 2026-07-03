@@ -2580,7 +2580,10 @@ mod tests {
         assert!(empty.is_some(), "Expected EmptyModel");
         match empty.unwrap() {
             ModelType::Struct(s) => {
-                assert!(s.fields.is_empty(), "Empty object should produce struct with no fields");
+                assert!(
+                    s.fields.is_empty(),
+                    "Empty object should produce struct with no fields"
+                );
             }
             _ => panic!("Expected Struct for EmptyModel"),
         }
@@ -2630,7 +2633,10 @@ mod tests {
         assert_eq!(responses[0].status_code, "200");
 
         let user = models.iter().find(|m| m.name() == "User");
-        assert!(user.is_some(), "User model should be generated from components");
+        assert!(
+            user.is_some(),
+            "User model should be generated from components"
+        );
     }
 
     #[test]
@@ -2658,7 +2664,10 @@ mod tests {
         assert!(order.is_some());
         match order.unwrap() {
             ModelType::Struct(s) => {
-                assert_eq!(s.description, Some("Represents a purchase order".to_string()));
+                assert_eq!(
+                    s.description,
+                    Some("Represents a purchase order".to_string())
+                );
             }
             _ => panic!("Expected Struct for Order"),
         }

@@ -260,61 +260,91 @@ mod tests {
 
     #[test]
     fn test_validation_rules_has_any_min_length() {
-        let rules = ValidationRules { min_length: Some(1), ..Default::default() };
+        let rules = ValidationRules {
+            min_length: Some(1),
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_max_length() {
-        let rules = ValidationRules { max_length: Some(100), ..Default::default() };
+        let rules = ValidationRules {
+            max_length: Some(100),
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_pattern() {
-        let rules = ValidationRules { pattern: Some(r"^\d+$".to_string()), ..Default::default() };
+        let rules = ValidationRules {
+            pattern: Some(r"^\d+$".to_string()),
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_email() {
-        let rules = ValidationRules { email: true, ..Default::default() };
+        let rules = ValidationRules {
+            email: true,
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_url() {
-        let rules = ValidationRules { url: true, ..Default::default() };
+        let rules = ValidationRules {
+            url: true,
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_minimum() {
-        let rules = ValidationRules { minimum: Some(0.0), ..Default::default() };
+        let rules = ValidationRules {
+            minimum: Some(0.0),
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_exclusive_minimum() {
-        let rules = ValidationRules { exclusive_minimum: true, ..Default::default() };
+        let rules = ValidationRules {
+            exclusive_minimum: true,
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_multiple_of() {
-        let rules = ValidationRules { multiple_of: Some(5.0), ..Default::default() };
+        let rules = ValidationRules {
+            multiple_of: Some(5.0),
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_min_items() {
-        let rules = ValidationRules { min_items: Some(1), ..Default::default() };
+        let rules = ValidationRules {
+            min_items: Some(1),
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 
     #[test]
     fn test_validation_rules_has_any_unique_items() {
-        let rules = ValidationRules { unique_items: true, ..Default::default() };
+        let rules = ValidationRules {
+            unique_items: true,
+            ..Default::default()
+        };
         assert!(rules.has_any());
     }
 }
