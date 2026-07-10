@@ -65,6 +65,42 @@ Pass `--display` to generate `impl std::fmt::Display` for every type:
 - Structs and compositions fall back to `{:?}` (Debug format).
 - Types that already include a `Display` derive via `x-rust-attrs` are skipped.
 
+## Validation Attribute Generation
+
+The generator emits field-level validation attributes compatible with the [validator](https://docs.rs/validator) crate.
+
+### Numeric range validation
+
+OpenAPI `minimum` / `maximum` constraints produce `#[validate(range(...))]` attributes.
+
+- Fields typed as `f64` or `f32` use **float literals**: `#[validate(range(min = 0.0, max = 1.0))]`.
+- Integer fields (`i64`, `i32`, etc.) use integer literals: `#[validate(range(min = 0, max = 100))]`.
+
+### Regex pattern validation
+
+OpenAPI `pattern` constraints produce a `LazyLock<Regex>` static and a `#[validate(regex(...))]` attribute:
+
+```rust
+use std::sync::LazyLock;
+use regex::Regex;
+
+static RE_0: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z]+$").unwrap());
+
+#[derive(Debug, Serialize, Deserialize, Validate)]
+pub struct MyModel {
+    #[validate(regex(path = RE_0))]
+    pub code: String,
+}
+```
+
+Identical patterns across multiple fields share a single static (deduplicated by pattern string).
+
+> **Note:** Specs that contain `pattern` constraints require the `regex` crate in the consumer's `Cargo.toml`:
+> ```toml
+> [dependencies]
+> regex = "1"
+> ```
+
 ## Code Quality
 
 - All generated code includes proper `use` imports (`uuid`, `chrono`, `serde`, etc.).

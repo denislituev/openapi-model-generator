@@ -2,7 +2,9 @@
 
 ## Prerequisites
 
-- **Rust toolchain** 1.70 or newer. Install via [rustup](https://rustup.rs/).
+- **Rust toolchain** 1.80 or newer (MSRV). Install via [rustup](https://rustup.rs/).
+
+> The 1.80 minimum is required for `std::sync::LazyLock`, which is used for generated regex statics.
 
 ## CLI Tool
 
@@ -90,3 +92,15 @@ The tool writes two files into the output directory:
 |---|---|
 | `models.rs` | All generated Rust types |
 | `mod.rs` | Module-level `use` re-exports and import declarations |
+
+## Validation Dependencies
+
+If the OpenAPI specification contains fields with a `pattern` constraint, the generated `models.rs` references the `regex` crate. Add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+regex = "1"
+validator = { version = "0.18", features = ["derive"] }
+```
+
+Specs without any `pattern` constraints do not require these crates.

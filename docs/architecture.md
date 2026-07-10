@@ -53,7 +53,7 @@ Strongly-typed structs that represent parsed OpenAPI schemas before code generat
 | `TypeAliasModel` | An `x-rust-type` type alias |
 | `Field` | A single struct field (name, type, nullability, validation rules, custom attrs) |
 | `RequestModel` / `ResponseModel` | Request/response body wrappers |
-| `ValidationRules` | OpenAPI numeric/string constraints (min, max, pattern, …) |
+| `ValidationRules` | OpenAPI numeric/string constraints (min, max, pattern, …); carries enough type information to emit correct float vs. integer literals |
 
 ### `parser` — OpenAPI → Internal Models (`parse_openapi`)
 
@@ -82,8 +82,9 @@ Processing steps:
    - `generate_enum` for `EnumModel`
    - `generate_type_alias` for `TypeAliasModel`
 4. **Attribute injection** — emits `#[derive(…)]`, `#[serde(…)]`, and any `x-rust-attrs` attributes.
-5. **Display generation** — optionally appends `impl std::fmt::Display` blocks.
-6. **Header** — prepends a doc comment recording the tool name and version.
+5. **Validation attribute emission** — for numeric constraints, emits `#[validate(range(...))]` using float literals for `f64`/`f32` fields and integer literals for integer fields; for `pattern` constraints, deduplicates patterns into `static RE_N: LazyLock<Regex>` statics and emits `#[validate(regex(path = RE_N))]`.
+6. **Display generation** — optionally appends `impl std::fmt::Display` blocks.
+7. **Header** — prepends a doc comment recording the tool name and version.
 
 `generate_lib` produces the companion `mod.rs` file with the necessary `use` re-exports.
 
@@ -117,3 +118,4 @@ OpenAPI YAML/JSON file
 | [indexmap](https://docs.rs/indexmap) | Ordered maps for deterministic field ordering |
 | [bitflags](https://docs.rs/bitflags) | `GenerateMode` and `RequiredUses` flag sets |
 | [tracing](https://docs.rs/tracing) | Diagnostic logging |
+| [regex](https://docs.rs/regex) *(consumer)* | Required in the consumer's crate when the spec contains `pattern` constraints |
