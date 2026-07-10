@@ -47,7 +47,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-openapi-model-generator = "0.6.2"
+openapi-model-generator = "0.6.3"
 ```
 
 ## Usage
@@ -84,6 +84,21 @@ omg -i spec.yaml -o ./generated --display
   - Enums and unions display their serde-rename value (e.g. `"config_sync"`)
   - Structs and compositions fall back to `{:?}` (Debug)
   - Types that already include a `Display` derive in `x-rust-attrs` are skipped
+
+### Validation dependencies
+
+Generated code with validation rules (`minLength`, `maximum`, `pattern`, etc.) uses the [`validator`](https://crates.io/crates/validator) crate. Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+validator = { version = "0.20", features = ["derive"] }
+```
+
+When the spec contains `pattern` constraints, the generated code also uses the [`regex`](https://crates.io/crates/regex) crate:
+
+```toml
+regex = "1"
+```
 
 ### Library Usage
 

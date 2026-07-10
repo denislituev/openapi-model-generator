@@ -7,6 +7,7 @@ use crate::{
     },
     Result,
 };
+use indexmap::IndexMap;
 
 bitflags::bitflags! {
     struct RequiredUses: u8 {
@@ -187,6 +188,7 @@ pub fn generate_models(
     let mut models_code = String::new();
     let mut required_uses = RequiredUses::empty();
     let mut needs_validator = false;
+    let mut pattern_registry: IndexMap<String, String> = IndexMap::new();
 
     for model_type in models {
         match model_type {
@@ -195,6 +197,7 @@ pub fn generate_models(
                     model,
                     &mut required_uses,
                     &mut needs_validator,
+                    &mut pattern_registry,
                     display,
                 )?);
             }
@@ -242,6 +245,11 @@ pub fn generate_models(
         output.push_str("use validator::Validate;\n");
     }
 
+    if !pattern_registry.is_empty() {
+        output.push_str("use regex::Regex;\n");
+        output.push_str("use std::sync::LazyLock;\n");
+    }
+
     if needs_datetime || needs_date {
         output.push_str("use chrono::{");
         let mut chrono_imports = Vec::new();
@@ -259,13 +267,49 @@ pub fn generate_models(
     }
 
     output.push('\n');
+
+    // Static regex objects, one per unique pattern across all models.
+    if !pattern_registry.is_empty() {
+        for (pattern, name) in &pattern_registry {
+            output.push_str(&format!(
+                "static {name}: LazyLock<Regex> = LazyLock::new(|| Regex::new(r\"{pattern}\").unwrap());\n"
+            ));
+        }
+        output.push('\n');
+    }
+
     output.push_str(&models_code);
 
     Ok(output)
 }
 
+/// Format f64 as a Rust float literal, ensuring `0` becomes `0.0`.
+fn format_f64_literal(v: f64) -> String {
+    let s = v.to_string();
+    if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") {
+        s
+    } else {
+        format!("{v}.0")
+    }
+}
+
 /// Generate validator attributes based on validation rules
-fn generate_validator_attrs(rules: &crate::models::ValidationRules, field_type: &str) -> String {
+/// Register a regex pattern and return the name of the static that holds its compiled `Regex`.
+/// Patterns are deduplicated: the same pattern always maps to the same static.
+fn register_pattern(pattern: &str, registry: &mut IndexMap<String, String>) -> String {
+    if let Some(existing) = registry.get(pattern) {
+        return existing.clone();
+    }
+    let name = format!("RE_{}", registry.len() + 1);
+    registry.insert(pattern.to_string(), name.clone());
+    name
+}
+
+fn generate_validator_attrs(
+    rules: &crate::models::ValidationRules,
+    field_type: &str,
+    pattern_registry: &mut IndexMap<String, String>,
+) -> String {
     let mut attrs = String::new();
 
     match field_type {
@@ -293,18 +337,37 @@ fn generate_validator_attrs(rules: &crate::models::ValidationRules, field_type: 
             }
 
             if let Some(pattern) = &rules.pattern {
-                attrs.push_str(&format!("    #[regex(pattern = r\"{}\")]\n", pattern));
+                let static_name = register_pattern(pattern, pattern_registry);
+                attrs.push_str(&format!("    #[validate(regex(path = {static_name}))]\n"));
             }
         }
-        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
-        | "Option<i8>" | "Option<i16>" | "Option<i32>" | "Option<i64>" | "Option<u8>"
-        | "Option<u16>" | "Option<u32>" | "Option<u64>" | "Option<f32>" | "Option<f64>" => {
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "Option<i8>"
+        | "Option<i16>" | "Option<i32>" | "Option<i64>" | "Option<u8>" | "Option<u16>"
+        | "Option<u32>" | "Option<u64>" => {
             let mut range_attrs = Vec::new();
             if let Some(min) = rules.minimum {
-                range_attrs.push(format!("min = {}", min));
+                range_attrs.push(format!("min = {}", min as i64));
             }
             if let Some(max) = rules.maximum {
-                range_attrs.push(format!("max = {}", max));
+                range_attrs.push(format!("max = {}", max as i64));
+            }
+            if rules.exclusive_minimum || rules.exclusive_maximum {
+                range_attrs.push("exclusive = true".to_string());
+            }
+            if !range_attrs.is_empty() {
+                attrs.push_str(&format!(
+                    "    #[validate(range({}))]\n",
+                    range_attrs.join(", ")
+                ));
+            }
+        }
+        "f32" | "f64" | "Option<f32>" | "Option<f64>" => {
+            let mut range_attrs = Vec::new();
+            if let Some(min) = rules.minimum {
+                range_attrs.push(format!("min = {}", format_f64_literal(min)));
+            }
+            if let Some(max) = rules.maximum {
+                range_attrs.push(format!("max = {}", format_f64_literal(max)));
             }
             if rules.exclusive_minimum || rules.exclusive_maximum {
                 range_attrs.push("exclusive = true".to_string());
@@ -341,6 +404,7 @@ fn generate_model(
     model: &Model,
     required_uses: &mut RequiredUses,
     needs_validator: &mut bool,
+    pattern_registry: &mut IndexMap<String, String>,
     display: bool,
 ) -> Result<String> {
     let mut output = String::new();
@@ -407,7 +471,7 @@ fn generate_model(
 
         let mut needs_validate = false;
         if let Some(rules) = &field.validation_rules {
-            let attrs = generate_validator_attrs(rules, &full_field_type);
+            let attrs = generate_validator_attrs(rules, &full_field_type, pattern_registry);
             if !attrs.is_empty() {
                 needs_validate = true;
                 field_body.push_str(&attrs);
@@ -833,6 +897,127 @@ mod tests {
         assert!(
             !output.contains("impl std::fmt::Display"),
             "Display impl should be skipped when x-rust-attrs already has Display:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_float_range_uses_float_literals() {
+        // Regression test for issue #66: f64 fields must get float literals
+        // (e.g. `min = 0.0`) so the `Validate` derive infers f64, not i32.
+        let rules = crate::models::ValidationRules {
+            minimum: Some(0.0),
+            maximum: Some(100.0),
+            ..Default::default()
+        };
+
+        // Non-optional f64
+        let mut registry = IndexMap::new();
+        let attrs = generate_validator_attrs(&rules, "f64", &mut registry);
+        assert!(
+            attrs.contains("min = 0.0"),
+            "f64 min should be a float literal:\n{attrs}"
+        );
+        assert!(
+            attrs.contains("max = 100.0"),
+            "f64 max should be a float literal:\n{attrs}"
+        );
+
+        // Optional f64
+        let mut registry = IndexMap::new();
+        let attrs = generate_validator_attrs(&rules, "Option<f64>", &mut registry);
+        assert!(
+            attrs.contains("min = 0.0") && attrs.contains("max = 100.0"),
+            "Option<f64> range should use float literals:\n{attrs}"
+        );
+    }
+
+    #[test]
+    fn test_integer_range_uses_integer_literals() {
+        // Integer fields should keep integer literals (no `.0`).
+        let rules = crate::models::ValidationRules {
+            minimum: Some(0.0),
+            maximum: Some(100.0),
+            ..Default::default()
+        };
+
+        let mut registry = IndexMap::new();
+        let attrs = generate_validator_attrs(&rules, "i64", &mut registry);
+        assert!(
+            attrs.contains("min = 0") && !attrs.contains("min = 0.0"),
+            "i64 min should be an integer literal:\n{attrs}"
+        );
+        assert!(
+            attrs.contains("max = 100") && !attrs.contains("max = 100.0"),
+            "i64 max should be an integer literal:\n{attrs}"
+        );
+    }
+
+    #[test]
+    fn test_pattern_generates_validate_regex_with_static() {
+        // Regression test for issue #67: pattern must emit `#[validate(regex(path = ...))]`
+        // referencing a registered static, not the invalid `#[regex(...)]` attribute.
+        let rules = crate::models::ValidationRules {
+            pattern: Some(r"^[a-f0-9]{64}$".to_string()),
+            ..Default::default()
+        };
+
+        let mut registry = IndexMap::new();
+        let attrs = generate_validator_attrs(&rules, "String", &mut registry);
+
+        assert!(
+            attrs.contains("#[validate(regex(path = RE_1))]"),
+            "should emit validate(regex(path = ...)):\n{attrs}"
+        );
+        assert!(
+            !attrs.contains("#[regex("),
+            "must not emit the invalid #[regex(...)] attribute:\n{attrs}"
+        );
+        assert_eq!(registry.len(), 1, "pattern should be registered");
+        assert_eq!(registry.get(r"^[a-f0-9]{64}$"), Some(&"RE_1".to_string()));
+    }
+
+    #[test]
+    fn test_identical_patterns_deduplicated() {
+        // Two fields with the same pattern must share one static.
+        let rules = crate::models::ValidationRules {
+            pattern: Some(r"^[a-z]+$".to_string()),
+            ..Default::default()
+        };
+
+        let mut registry = IndexMap::new();
+        let _ = generate_validator_attrs(&rules, "String", &mut registry);
+        let attrs2 = generate_validator_attrs(&rules, "String", &mut registry);
+
+        assert_eq!(
+            registry.len(),
+            1,
+            "identical patterns must share one static"
+        );
+        assert!(
+            attrs2.contains("#[validate(regex(path = RE_1))]"),
+            "second field should reuse RE_1:\n{attrs2}"
+        );
+    }
+
+    #[test]
+    fn test_distinct_patterns_get_distinct_statics() {
+        let rules_a = crate::models::ValidationRules {
+            pattern: Some(r"^[a-z]+$".to_string()),
+            ..Default::default()
+        };
+        let rules_b = crate::models::ValidationRules {
+            pattern: Some(r"^[0-9]+$".to_string()),
+            ..Default::default()
+        };
+
+        let mut registry = IndexMap::new();
+        let attrs_a = generate_validator_attrs(&rules_a, "String", &mut registry);
+        let attrs_b = generate_validator_attrs(&rules_b, "String", &mut registry);
+
+        assert!(
+            attrs_a.contains("#[validate(regex(path = RE_1))]")
+                && attrs_b.contains("#[validate(regex(path = RE_2))]"),
+            "distinct patterns must get distinct statics:\n{attrs_a}\n{attrs_b}"
         );
     }
 }
