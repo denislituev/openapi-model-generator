@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-07-10
+
+### Fixed
+- **Float Range Validation**: Generated `#[validate(range(...))]` for `f64`/`f32` fields now uses float literals (`min = 0.0`) instead of integer literals (`min = 0`), which previously caused compile errors because the `Validate` derive inferred the wrong type.
+
+- **Regex Pattern Validation**: Fixed generated code for OpenAPI `pattern` constraints. Previously emitted the invalid `#[regex(pattern = r"...")]` attribute, which failed to compile. The generator now emits `#[validate(regex(path = RE_N))]` referencing a generated `static LazyLock<Regex>`, using the `validator` crate's native regex support. Identical patterns across fields are deduplicated to a single static.
+
+### Changed
+- **MSRV**: Minimum Supported Rust Version bumped to **1.80** (uses `std::sync::LazyLock` for regex statics).
+
+- **Validation Dependencies**: Specs containing `pattern` constraints now require the [`regex`](https://crates.io/crates/regex) crate in the consumer's `Cargo.toml`. See the README "Validation dependencies" section.
+
 ## [0.6.2] - 2026-05-24
 
 ### Added
