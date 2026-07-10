@@ -1070,7 +1070,7 @@ mod tests {
             max_length: Some(100),
             ..Default::default()
         };
-        let out = generate_validator_attrs(&rules, "String");
+        let out = generate_validator_attrs(&rules, "String", &mut IndexMap::new());
         assert!(out.contains("#[validate(length("));
         assert!(out.contains("min = 1"));
         assert!(out.contains("max = 100"));
@@ -1083,7 +1083,7 @@ mod tests {
             email: true,
             ..Default::default()
         };
-        let out = generate_validator_attrs(&rules, "String");
+        let out = generate_validator_attrs(&rules, "String", &mut IndexMap::new());
         assert!(out.contains("#[validate(email)]\n"));
     }
 
@@ -1094,7 +1094,7 @@ mod tests {
             url: true,
             ..Default::default()
         };
-        let out = generate_validator_attrs(&rules, "Option<String>");
+        let out = generate_validator_attrs(&rules, "Option<String>", &mut IndexMap::new());
         assert!(out.contains("#[validate(url)]\n"));
     }
 
@@ -1105,8 +1105,10 @@ mod tests {
             pattern: Some(r"^\d+$".to_string()),
             ..Default::default()
         };
-        let out = generate_validator_attrs(&rules, "String");
-        assert!(out.contains("#[regex(pattern = r\""));
+        let mut registry = IndexMap::new();
+        let out = generate_validator_attrs(&rules, "String", &mut registry);
+        assert!(out.contains("#[validate(regex(path = RE_1))]\n"));
+        assert!(registry.contains_key(r"^\d+$"));
     }
 
     #[test]
@@ -1117,7 +1119,7 @@ mod tests {
             maximum: Some(255.0),
             ..Default::default()
         };
-        let out = generate_validator_attrs(&rules, "i64");
+        let out = generate_validator_attrs(&rules, "i64", &mut IndexMap::new());
         assert!(out.contains("#[validate(range("));
         assert!(out.contains("min = 0"));
         assert!(out.contains("max = 255"));
@@ -1131,7 +1133,7 @@ mod tests {
             max_items: Some(10),
             ..Default::default()
         };
-        let out = generate_validator_attrs(&rules, "Vec<String>");
+        let out = generate_validator_attrs(&rules, "Vec<String>", &mut IndexMap::new());
         assert!(out.contains("#[validate(length("));
         assert!(out.contains("min = 1"));
         assert!(out.contains("max = 10"));
@@ -1145,8 +1147,101 @@ mod tests {
             ..Default::default()
         };
         // Custom type that doesn't match any arm → no output
-        let out = generate_validator_attrs(&rules, "MyCustomType");
+        let out = generate_validator_attrs(&rules, "MyCustomType", &mut IndexMap::new());
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_f64_range_uses_float_literals() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            minimum: Some(0.0),
+            maximum: Some(1.0),
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "f64", &mut IndexMap::new());
+        assert!(out.contains("#[validate(range("));
+        // Must use float literals (0.0, 1.0) not integer literals (0, 1)
+        assert!(out.contains("min = 0.0"), "expected float literal 'min = 0.0', got:\n{out}");
+        assert!(out.contains("max = 1.0"), "expected float literal 'max = 1.0', got:\n{out}");
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_f32_range_uses_float_literals() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            minimum: Some(0.5),
+            maximum: Some(100.5),
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "f32", &mut IndexMap::new());
+        assert!(out.contains("#[validate(range("));
+        assert!(out.contains("min = 0.5"), "expected 'min = 0.5', got:\n{out}");
+        assert!(out.contains("max = 100.5"), "expected 'max = 100.5', got:\n{out}");
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_f64_integer_value_uses_dot_zero() {
+        // Integer-valued f64 bounds must still emit float literals (e.g. 0.0 not 0)
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            minimum: Some(5.0),
+            maximum: Some(255.0),
+            ..Default::default()
+        };
+        let out = generate_validator_attrs(&rules, "f64", &mut IndexMap::new());
+        assert!(out.contains("min = 5.0"), "expected 'min = 5.0', got:\n{out}");
+        assert!(out.contains("max = 255.0"), "expected 'max = 255.0', got:\n{out}");
+        // Ensure integer literals are NOT present
+        assert!(!out.contains("min = 5,") && !out.contains("min = 5)"),
+            "integer literal found in float range attr:\n{out}");
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_pattern_emits_regex_path() {
+        use crate::models::ValidationRules;
+        let rules = ValidationRules {
+            pattern: Some(r"^[a-z]+$".to_string()),
+            ..Default::default()
+        };
+        let mut registry = IndexMap::new();
+        let out = generate_validator_attrs(&rules, "String", &mut registry);
+        // Must emit validate(regex(path = RE_N)) not #[regex(pattern = ...)]
+        assert!(out.contains("#[validate(regex(path = RE_1))]"),
+            "expected regex(path = RE_1), got:\n{out}");
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.get(r"^[a-z]+$"), Some(&"RE_1".to_string()));
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_identical_patterns_deduplicated() {
+        use crate::models::ValidationRules;
+        let pattern = r"^\d{3}$".to_string();
+        let rules = ValidationRules {
+            pattern: Some(pattern.clone()),
+            ..Default::default()
+        };
+        let mut registry = IndexMap::new();
+        // First field registers RE_1
+        let out1 = generate_validator_attrs(&rules, "String", &mut registry);
+        // Second field with same pattern reuses RE_1
+        let out2 = generate_validator_attrs(&rules, "String", &mut registry);
+        assert!(out1.contains("RE_1"));
+        assert!(out2.contains("RE_1"), "identical pattern should reuse RE_1, got:\n{out2}");
+        assert_eq!(registry.len(), 1, "duplicate pattern must not add a second entry");
+    }
+
+    #[test]
+    fn test_generate_validator_attrs_distinct_patterns_get_separate_statics() {
+        use crate::models::ValidationRules;
+        let mut registry = IndexMap::new();
+        let rules1 = ValidationRules { pattern: Some(r"^a+$".to_string()), ..Default::default() };
+        let rules2 = ValidationRules { pattern: Some(r"^b+$".to_string()), ..Default::default() };
+        let out1 = generate_validator_attrs(&rules1, "String", &mut registry);
+        let out2 = generate_validator_attrs(&rules2, "String", &mut registry);
+        assert!(out1.contains("RE_1"));
+        assert!(out2.contains("RE_2"));
+        assert_eq!(registry.len(), 2);
     }
 
     // ─── generate_model ──────────────────────────────────────────────────────
@@ -1185,7 +1280,7 @@ mod tests {
         );
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(out.contains("pub struct User {"));
         assert!(out.contains("pub id: String,"));
         assert!(out.contains("pub age: Option<i64>,"));
@@ -1198,7 +1293,7 @@ mod tests {
         let model = make_model("Product", vec![make_field("name", "String", true)]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, true).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), true).expect("generate_model failed");
         assert!(out.contains("impl std::fmt::Display for Product"));
         assert!(out.contains("write!(f, \"{:?}\", self)"));
     }
@@ -1211,7 +1306,7 @@ mod tests {
         );
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let _ = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let _ = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(
             ru.contains(RequiredUses::DATETIME),
             "DATETIME flag should be set"
@@ -1223,7 +1318,7 @@ mod tests {
         let model = make_model("Record", vec![make_field("birth_date", "Date", true)]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let _ = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let _ = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(ru.contains(RequiredUses::DATE), "DATE flag should be set");
     }
 
@@ -1232,7 +1327,7 @@ mod tests {
         let model = make_model("Entity", vec![make_field("id", "Uuid", true)]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(ru.contains(RequiredUses::UUID), "UUID flag should be set");
         assert!(out.contains("pub id: Uuid,"));
     }
@@ -1243,7 +1338,7 @@ mod tests {
         let model = make_model("Signal", vec![make_field("type", "String", true)]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(out.contains("r#type"));
         assert!(out.contains("#[serde(rename = \"type\")]"));
     }
@@ -1254,7 +1349,7 @@ mod tests {
         let model = make_model("Obj", vec![make_field("myFieldName", "String", true)]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(out.contains("pub my_field_name: String,"));
         assert!(out.contains("#[serde(rename = \"myFieldName\")]"));
     }
@@ -1270,7 +1365,7 @@ mod tests {
         let model = make_model("Extensible", vec![field]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(out.contains("#[serde(flatten)]"));
     }
 
@@ -1281,7 +1376,7 @@ mod tests {
         let model = make_model("Widget", vec![field]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(out.contains("pub label: Option<String>,"));
     }
 
@@ -1292,7 +1387,7 @@ mod tests {
         let model = make_model("Collection", vec![field]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         assert!(out.contains("pub items: Vec<String>,"));
     }
 
@@ -1304,7 +1399,7 @@ mod tests {
         ]);
         let mut ru = RequiredUses::empty();
         let mut nv = false;
-        let out = generate_model(&model, &mut ru, &mut nv, false).expect("generate_model failed");
+        let out = generate_model(&model, &mut ru, &mut nv, &mut IndexMap::new(), false).expect("generate_model failed");
         // Default derive must NOT be added when custom derive is already present
         let derive_count = out.matches("#[derive(").count();
         assert_eq!(derive_count, 1, "Only one derive block expected:\n{out}");
