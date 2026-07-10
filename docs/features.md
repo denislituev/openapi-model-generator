@@ -24,7 +24,7 @@
 | OpenAPI keyword | Generated Rust construct |
 |---|---|
 | `allOf` | Flat `struct` merging all fields from referenced schemas |
-| `oneOf` | Tagged-union `enum` (internally tagged via serde) |
+| `oneOf` | Tagged-union `enum` (internally untagged via serde) |
 | `anyOf` | Tagged-union `enum` (same as `oneOf`) |
 
 ## Field Handling
@@ -84,11 +84,11 @@ OpenAPI `pattern` constraints produce a `LazyLock<Regex>` static and a `#[valida
 use std::sync::LazyLock;
 use regex::Regex;
 
-static RE_0: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z]+$").unwrap());
+static RE_1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z]+$").unwrap());
 
 #[derive(Debug, Serialize, Deserialize, Validate)]
 pub struct MyModel {
-    #[validate(regex(path = RE_0))]
+    #[validate(regex(path = RE_1))]
     pub code: String,
 }
 ```

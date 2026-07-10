@@ -76,7 +76,7 @@ Processing steps:
 1. **Mode filtering** — skips request/response types when the mode flags are not set.
 2. **Use-statement detection** — scans every generated type to decide whether `uuid`, `chrono`, or other imports are needed (`RequiredUses` bitflags).
 3. **Per-type code generation** — dispatches to a dedicated function for each `ModelType` variant:
-   - `generate_struct` for `Model`
+   - `generate_model` for `Model`
    - `generate_union` for `UnionModel`
    - `generate_composition` for `CompositionModel`
    - `generate_enum` for `EnumModel`

@@ -26,7 +26,7 @@ Add `openapi-model-generator` to `Cargo.toml` to use it programmatically:
 
 ```toml
 [dependencies]
-openapi-model-generator = "0.6.2"
+openapi-model-generator = "0.6.3"
 ```
 
 ### Minimal library example
@@ -100,7 +100,7 @@ If the OpenAPI specification contains fields with a `pattern` constraint, the ge
 ```toml
 [dependencies]
 regex = "1"
-validator = { version = "0.18", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 ```
 
 Specs without any `pattern` constraints do not require these crates.
