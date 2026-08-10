@@ -528,7 +528,7 @@ fn generate_request_model(request: &RequestModel) -> Result<String> {
     }
 
     output.push_str(&format!("/// {}\n", request.name));
-    output.push_str("#[derive(Debug, Clone, Serialize)]\n");
+    output.push_str("#[derive(Debug, Clone, Deserialize)]\n");
     output.push_str(&format!("pub struct {} {{\n", request.name));
     output.push_str(&format!("    pub body: {},\n", request.schema));
     output.push_str("}\n");
@@ -550,7 +550,7 @@ fn generate_response_model(response: &ResponseModel) -> Result<String> {
         "",
     ));
 
-    output.push_str("#[derive(Debug, Clone, Deserialize)]\n");
+    output.push_str("#[derive(Debug, Clone, Serialize)]\n");
     output.push_str(&format!("pub struct {type_name} {{\n"));
     output.push_str(&format!("    pub body: {},\n", response.schema));
     output.push_str("}\n");
