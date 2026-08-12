@@ -432,7 +432,7 @@ fn generate_model(
                 *required_uses |= RequiredUses::DATETIME;
                 "DateTime<Utc>"
             }
-            "Date" => {
+            "Date" | "NaiveDate" => {
                 *required_uses |= RequiredUses::DATE;
                 "NaiveDate"
             }
