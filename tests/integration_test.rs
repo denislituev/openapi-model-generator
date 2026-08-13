@@ -472,6 +472,10 @@ fn test_pipeline_date_import_added_for_date_field() {
         .expect("generate_models failed");
 
     assert!(
+        code.contains("use chrono::{"),
+        "Expected chrono import:\n{code}"
+    );
+    assert!(
         code.contains("NaiveDate"),
         "Expected NaiveDate import:\n{code}"
     );
