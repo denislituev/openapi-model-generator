@@ -118,23 +118,37 @@ pub fn parse_openapi(
     }
 
     // Parse paths
-    for (_path, path_item) in openapi.paths.iter() {
+    for (path, path_item) in openapi.paths.iter() {
         let path_item = match path_item {
             ReferenceOr::Item(item) => item,
             ReferenceOr::Reference { .. } => continue,
         };
 
         let operations = [
-            &path_item.get,
-            &path_item.post,
-            &path_item.put,
-            &path_item.delete,
-            &path_item.patch,
+            ("GET", &path_item.get),
+            ("POST", &path_item.post),
+            ("PUT", &path_item.put),
+            ("DELETE", &path_item.delete),
+            ("PATCH", &path_item.patch),
         ];
 
-        for op in operations.iter().filter_map(|o| o.as_ref()) {
-            let inline_models =
-                process_operation(op, &mut requests, &mut responses, schemas, request_bodies)?;
+        for (method, op) in operations
+            .iter()
+            .filter_map(|(m, o)| o.as_ref().map(|operation| (*m, operation)))
+        {
+            let backup_name = format!(
+                "{}{}",
+                method,
+                to_pascal_case(&path.replace(['/', '{'], "-").replace('}', ""))
+            );
+            let inline_models = process_operation(
+                op,
+                &mut requests,
+                &mut responses,
+                schemas,
+                request_bodies,
+                &backup_name,
+            )?;
             for model_type in inline_models {
                 if added_models.insert(model_type.name().to_string()) {
                     models.push(model_type);
@@ -152,8 +166,10 @@ fn process_operation(
     responses: &mut Vec<ResponseModel>,
     all_schemas: &IndexMap<String, ReferenceOr<Schema>>,
     request_bodies: &IndexMap<String, ReferenceOr<openapiv3::RequestBody>>,
+    backup_name: &str,
 ) -> Result<Vec<ModelType>> {
     let mut inline_models = Vec::new();
+    let operation_name = to_pascal_case(operation.operation_id.as_deref().unwrap_or(backup_name));
 
     // Parse request body
     if let Some(request_body_ref) = &operation.request_body {
@@ -177,9 +193,6 @@ fn process_operation(
         if let Some((request_body, is_required)) = request_body_data {
             for (content_type, media_type) in &request_body.content {
                 if let Some(schema) = &media_type.schema {
-                    let operation_name =
-                        to_pascal_case(operation.operation_id.as_deref().unwrap_or("Unknown"));
-
                     let schema_type = if is_inline {
                         if let ReferenceOr::Item(schema_item) = schema {
                             if matches!(schema_item.schema_kind, SchemaKind::Type(Type::Object(_)))
@@ -216,14 +229,41 @@ fn process_operation(
         if let ReferenceOr::Item(response) = response_ref {
             for (content_type, media_type) in &response.content {
                 if let Some(schema) = &media_type.schema {
+                    let mut is_array = false;
+                    let schema_type = if let ReferenceOr::Item(schema_item) = schema {
+                        if matches!(schema_item.schema_kind, SchemaKind::Type(Type::Object(_))) {
+                            let model_name = format!("{operation_name}Response{status}");
+                            let model_types =
+                                parse_schema_to_model_type(&model_name, schema, all_schemas)?;
+                            inline_models.extend(model_types);
+                            model_name
+                        } else if matches!(
+                            schema_item.schema_kind,
+                            SchemaKind::Type(Type::Array(_))
+                        ) {
+                            is_array = true;
+                            let model_name = format!("{operation_name}ResponseArrayObject{status}");
+                            let model_types =
+                                parse_schema_to_model_type(&model_name, schema, all_schemas)?;
+
+                            inline_models.extend(model_types);
+                            model_name
+                        } else {
+                            extract_type_and_format(schema, all_schemas)?.0
+                        }
+                    } else {
+                        extract_type_and_format(schema, all_schemas)?.0
+                    };
+                    let schema = if is_array {
+                        format!("Vec<{}>", schema_type)
+                    } else {
+                        schema_type
+                    };
                     let response = ResponseModel {
-                        name: format!(
-                            "{}Response",
-                            to_pascal_case(operation.operation_id.as_deref().unwrap_or("Unknown"))
-                        ),
-                        status_code: status.to_string(),
+                        name: operation_name.clone(),
+                        status_code: format!("{}", status),
                         content_type: content_type.clone(),
-                        schema: extract_type_and_format(schema, all_schemas)?.0,
+                        schema,
                         description: Some(response.description.clone()),
                     };
                     responses.push(response);
@@ -287,10 +327,25 @@ fn parse_schema_to_model_type(
 
                     // Process regular properties
                     for (field_name, field_schema) in &obj.properties {
+                        let mut field_to_field_type: IndexMap<String, String> = IndexMap::new();
                         if let ReferenceOr::Item(boxed_schema) = field_schema {
                             if matches!(boxed_schema.schema_kind, SchemaKind::Type(Type::Object(_)))
                             {
                                 let struct_name = to_pascal_case(field_name);
+                                let wrapped_schema = ReferenceOr::Item((**boxed_schema).clone());
+                                let nested_models = parse_schema_to_model_type(
+                                    &struct_name,
+                                    &wrapped_schema,
+                                    all_schemas,
+                                )?;
+                                inline_models.extend(nested_models);
+                            } else if matches!(
+                                &boxed_schema.schema_kind,
+                                SchemaKind::Type(Type::Array(_))
+                            ) {
+                                let struct_name = format!("{}Item", to_pascal_case(field_name));
+                                field_to_field_type
+                                    .insert(field_name.to_string(), struct_name.to_string());
                                 let wrapped_schema = ReferenceOr::Item((**boxed_schema).clone());
                                 let nested_models = parse_schema_to_model_type(
                                     &struct_name,
@@ -323,7 +378,10 @@ fn parse_schema_to_model_type(
                         let is_required = obj.required.contains(field_name);
                         fields.push(Field {
                             name: field_name.clone(),
-                            field_type: field_info.field_type,
+                            field_type: field_to_field_type
+                                .get(field_name)
+                                .unwrap_or(&field_info.field_type)
+                                .to_string(),
                             format: field_info.format,
                             is_required,
                             is_array_ref: field_info.is_array_ref,
@@ -436,6 +494,16 @@ fn parse_schema_to_model_type(
 
                     match items {
                         ReferenceOr::Item(item_schema) => match &item_schema.schema_kind {
+                            SchemaKind::Type(Type::Object(_obj)) => {
+                                let array_model_schema = ReferenceOr::Item((**item_schema).clone());
+                                let array_object_models = parse_schema_to_model_type(
+                                    name,
+                                    &array_model_schema,
+                                    all_schemas,
+                                )?;
+                                models.extend(array_object_models);
+                            }
+
                             SchemaKind::OneOf { one_of } => {
                                 let item_type_name = format!("{array_name}Item");
 
@@ -1193,6 +1261,209 @@ fn extract_fields_from_schema(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_parse_nested_object_array_generates_model() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test API", "version": "1.0.0" },
+            "paths": {
+                "/items": {
+                    "get": {
+                        "operationId": "getItems",
+                        "responses": {
+                            "200": {
+                                "description": "OK",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "exampleField": {
+                                                    "type": "string"
+                                                },
+                                                "objectArray": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "objectArrayItemField": {
+                                                                "type": "string"
+                                                            },
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _requests, responses) =
+            parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        // 1. Verify that response model was created
+        assert_eq!(responses.len(), 1);
+        let response_model = &responses[0];
+        assert_eq!(response_model.name, "GetItems");
+
+        // 2. Verify that response schema references the top level object
+        assert_eq!(response_model.schema, "GetItemsResponse200");
+
+        // 3. Verify that the nested object model was generated
+        let inline_model = models.iter().find(|m| m.name() == "ObjectArrayItem");
+        assert!(
+            inline_model.is_some(),
+            "Expected a model named 'ObjectArrayItem' to be generated"
+        );
+
+        if let Some(ModelType::Struct(model)) = inline_model {
+            assert_eq!(model.fields.len(), 1);
+
+            assert_eq!(model.fields[0].name, "objectArrayItemField");
+            assert_eq!(model.fields[0].field_type, "String");
+        } else {
+            panic!("Expected a Struct model for GetItemsResponse");
+        }
+    }
+
+    #[test]
+    fn test_parse_top_level_array_object_generates_model() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test API", "version": "1.0.0" },
+            "paths": {
+                "/items": {
+                    "get": {
+                        "operationId": "getItems",
+                        "responses": {
+                            "200": {
+                                "description": "OK",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "exampleField": {
+                                                        "type": "string"
+                                                    },
+                                                    "anotherExampleField": {
+                                                        "type": "string"
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _requests, responses) =
+            parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        // 1. Verify that response model was created
+        assert_eq!(responses.len(), 1);
+        let response_model = &responses[0];
+        assert_eq!(response_model.name, "GetItems");
+
+        // 2. Verify that response schema references a Vec of the top level array object
+        assert_eq!(response_model.schema, "Vec<GetItemsResponseArrayObject200>");
+
+        // 3. Verify that the array object model was generated
+        let inline_model = models
+            .iter()
+            .find(|m| m.name() == "GetItemsResponseArrayObject200");
+        assert!(
+            inline_model.is_some(),
+            "Expected a model named 'GetItemsResponseArrayObject200' to be generated"
+        );
+
+        if let Some(ModelType::Struct(model)) = inline_model {
+            assert_eq!(model.fields.len(), 2);
+            assert_eq!(model.fields[0].name, "anotherExampleField");
+            assert_eq!(model.fields[0].field_type, "String");
+
+            assert_eq!(model.fields[1].name, "exampleField");
+            assert_eq!(model.fields[1].field_type, "String");
+        } else {
+            panic!("Expected a Struct model for GetItemsResponse");
+        }
+    }
+
+    #[test]
+    fn test_parse_inline_response_generates_model() {
+        let openapi_spec: OpenAPI = serde_json::from_value(json!({
+            "openapi": "3.0.0",
+            "info": { "title": "Test API", "version": "1.0.0" },
+            "paths": {
+                "/items": {
+                    "get": {
+                        "operationId": "getItem",
+                        "responses": {
+                            "200": {
+                                "description": "OK",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": { "type": "string" },
+                                                "value": { "type": "integer" }
+                                            },
+                                            "required": ["name"]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("Failed to deserialize OpenAPI spec");
+
+        let (models, _requests, responses) =
+            parse_openapi(&openapi_spec).expect("Failed to parse OpenAPI spec");
+
+        // 1. Verify that response model was created
+        assert_eq!(responses.len(), 1);
+        let response_model = &responses[0];
+        assert_eq!(response_model.name, "GetItem");
+
+        // 2. Verify that response schema references a NEW model, not Value
+        assert_eq!(response_model.schema, "GetItemResponse200");
+
+        // 3. Verify that the response model itself was generated
+        let inline_model = models.iter().find(|m| m.name() == "GetItemResponse200");
+        assert!(
+            inline_model.is_some(),
+            "Expected a model named 'GetItemResponse200' to be generated"
+        );
+
+        if let Some(ModelType::Struct(model)) = inline_model {
+            assert_eq!(model.fields.len(), 2);
+            assert_eq!(model.fields[0].name, "name");
+            assert_eq!(model.fields[0].field_type, "String");
+
+            assert_eq!(model.fields[1].name, "value");
+            assert_eq!(model.fields[1].field_type, "i64");
+        } else {
+            panic!("Expected a Struct model for GetItemResponse");
+        }
+    }
 
     #[test]
     fn test_parse_inline_request_body_generates_model() {
